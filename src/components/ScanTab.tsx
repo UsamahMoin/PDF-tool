@@ -17,6 +17,7 @@ import {
 import { canvasToJpeg, imagesToPdf } from '../lib/imagesToPdf'
 import { downloadBlob, fmtSize } from '../lib/utils'
 import { useTabDirty } from '../lib/dirtyContext'
+import { isNative, takePhoto } from '../lib/native'
 
 interface ScanPage {
   id: string
@@ -190,11 +191,42 @@ export function ScanTab({ setStatus }: Props) {
 
   const outputSize = active?.bitmap ? computeWarpedSize(active.quad) : null
 
+  const captureFromCamera = async () => {
+    try {
+      const file = await takePhoto()
+      await addFiles([file])
+    } catch (e) {
+      // User cancelled or permission denied — silent retry-friendly fail
+      const msg = (e as Error).message
+      if (msg && !/cancel/i.test(msg)) {
+        setStatus(`Camera: ${msg}`)
+      }
+    }
+  }
+
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 flex flex-col gap-5 h-full min-h-0">
+      {isNative && (
+        <Button
+          variant="primary"
+          size="lg"
+          onClick={captureFromCamera}
+          className="w-full"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
+          Take photo
+        </Button>
+      )}
       <DropZone
-        label="Add photos to scan"
-        sublabel="JPG, PNG, WebP · drag the 4 corners on each image to mark the document edges"
+        label={isNative ? 'Or pick from photos' : 'Add photos to scan'}
+        sublabel={
+          isNative
+            ? 'JPG, PNG, WebP · pick one or more from your library'
+            : 'JPG, PNG, WebP · drag the 4 corners on each image to mark the document edges'
+        }
         accept="image/jpeg,image/png,image/webp,image/*"
         multiple
         onFiles={addFiles}
