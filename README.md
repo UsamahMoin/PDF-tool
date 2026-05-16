@@ -98,7 +98,3 @@ python pdf_tool.py
 - PDF parsing and rendering use [`pdfjs-dist`](https://github.com/mozilla/pdf.js); PDF creation/editing uses [`pdf-lib`](https://github.com/Hopding/pdf-lib).
 - Drag-and-drop reordering in the Merge tab is powered by [`@dnd-kit`](https://dndkit.com/).
 - The UI is built on Tailwind v4 with a custom dark color palette (coral accent, warm off-white text).
-
-## License
-
-No license specified yet — add one if you intend to distribute.
