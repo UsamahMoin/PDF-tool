@@ -12,9 +12,20 @@ export function stem(name: string): string {
   return name.replace(/\.pdf$/i, '')
 }
 
+import { isNative, saveFileNative } from './native'
+
 export type Downloadable = Uint8Array | ArrayBuffer | Blob | string
 
-export function downloadBlob(data: Downloadable, filename: string, type = 'application/octet-stream') {
+export async function downloadBlob(
+  data: Downloadable,
+  filename: string,
+  type = 'application/octet-stream',
+) {
+  if (isNative) {
+    await saveFileNative(data, filename, type)
+    return
+  }
+
   let blob: Blob
   if (data instanceof Blob) {
     blob = data
