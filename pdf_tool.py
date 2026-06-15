@@ -2,7 +2,7 @@
 """PDF Tool — Split · Merge · Extract · Vector DB · Rearrange · Compress · Scan  (PyQt6)"""
 
 import os, math, threading, subprocess, textwrap, sys, shutil, time
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter, PageObject, Transformation
 
 try:
     import cv2
@@ -303,13 +303,95 @@ def do_split(src, outdir, mode, value, spec, cb):
             out.append(p); cb(n, nc, fn); s = e
     return out
 
-def do_merge(paths, output, cb):
+LETTER_PORTRAIT = (612.0, 792.0)
+LETTER_LANDSCAPE = (792.0, 612.0)
+
+
+def _smart_letter_transform(page):
+    """Return target size, transform, and fitting mode for one PDF page."""
+    if page.rotation:
+        page.transfer_rotation_to_content()
+
+    # Match what PDF viewers display; scanned files commonly use a crop box
+    # smaller than their underlying media box.
+    visible_box = page.cropbox
+    left = float(visible_box.left)
+    bottom = float(visible_box.bottom)
+    width = float(visible_box.width)
+    height = float(visible_box.height)
+    if width <= 0 or height <= 0:
+        raise ValueError("PDF contains a page with invalid dimensions.")
+
+    target_width, target_height = (
+        LETTER_LANDSCAPE if width > height else LETTER_PORTRAIT
+    )
+    width_delta = abs(width - target_width) / target_width
+    height_delta = abs(height - target_height) / target_height
+
+    if width_delta <= 0.001 and height_delta <= 0.001:
+        scale_x = target_width / width
+        scale_y = target_height / height
+        mode = "unchanged"
+    elif width_delta <= 0.05 and height_delta <= 0.05:
+        # Small enough difference to fill Letter without noticeable distortion.
+        scale_x = target_width / width
+        scale_y = target_height / height
+        mode = "stretched"
+    elif width > target_width or height > target_height:
+        # Large pages fit proportionally; any remaining area becomes a margin.
+        scale_x = scale_y = min(target_width / width, target_height / height)
+        mode = "scaled down"
+    else:
+        # Small pages grow at most 10%, then retain centered margins.
+        scale_x = scale_y = min(
+            target_width / width,
+            target_height / height,
+            1.10,
+        )
+        mode = "scaled up"
+
+    rendered_width = width * scale_x
+    rendered_height = height * scale_y
+    offset_x = (target_width - rendered_width) / 2
+    offset_y = (target_height - rendered_height) / 2
+    transform = (
+        Transformation()
+        .translate(-left, -bottom)
+        .scale(scale_x, scale_y)
+        .translate(offset_x, offset_y)
+    )
+    return target_width, target_height, transform, mode
+
+
+def _smart_letter_page(page):
+    target_width, target_height, transform, mode = _smart_letter_transform(page)
+    normalized = PageObject.create_blank_page(
+        width=target_width,
+        height=target_height,
+    )
+    normalized.merge_transformed_page(page, transform, expand=False)
+    return normalized, mode
+
+
+def do_merge(paths, output, cb, smart_letter=False):
     w = PdfWriter(); total = 0
+    fit_counts = {
+        "unchanged": 0,
+        "stretched": 0,
+        "scaled down": 0,
+        "scaled up": 0,
+    }
     for i, p in enumerate(paths):
-        rr = PdfReader(p); w.append(rr); total += len(rr.pages)
+        rr = PdfReader(p)
+        for page in rr.pages:
+            if smart_letter:
+                page, mode = _smart_letter_page(page)
+                fit_counts[mode] += 1
+            w.add_page(page)
+            total += 1
         cb(i+1, len(paths), os.path.basename(p))
     with open(output, "wb") as f: w.write(f)
-    return total
+    return total, fit_counts
 
 def do_extract(path, start, end):
     r = PdfReader(path)
@@ -1152,7 +1234,7 @@ class App(QMainWindow):
         val = self._sp_val.get(); spec = self._sp_spec.text()
 
         def _cb(done, total, name):
-            QTimer.singleShot(0, lambda: self._sp_prog.step(done, total, name))
+            self._post(self._sp_prog.step, done, total, name)
         def _ok(out):
             self._sp_prog.done(f"{len(out)} file(s) created", outdir)
             self._sp_btn.setDisabled(False); self._sp_btn.setText("Split PDF")
@@ -1209,6 +1291,24 @@ class App(QMainWindow):
         bl.addWidget(self._mg_count_lbl)
         lay.addWidget(btn_row)
 
+        lay.addWidget(_vspace(10))
+        self._mg_letter = QCheckBox("Smart fit pages to US Letter")
+        self._mg_letter.setChecked(True)
+        self._mg_letter.setStyleSheet(f"""
+            QCheckBox {{ color:{FG}; spacing:6px; font-size:10pt; }}
+            QCheckBox::indicator {{ width:16px; height:16px; border-radius:3px;
+                                    border:2px solid {BORDER}; background:{CARD}; }}
+            QCheckBox::indicator:checked {{ background:{ACCENT}; border-color:{ACCENT}; }}
+        """)
+        lay.addWidget(self._mg_letter)
+        letter_hint = QLabel(
+            "Near-Letter pages fill the sheet · large pages scale down · "
+            "small pages grow up to 10% and keep centered margins"
+        )
+        letter_hint.setWordWrap(True)
+        letter_hint.setStyleSheet(f"color:{FG2}; font-size:9pt; padding-left:24px;")
+        lay.addWidget(letter_hint)
+
         # ── Save path ────────────────────────────────────────────────────────
         lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
         lay.addWidget(_section("SAVE MERGED FILE AS")); lay.addWidget(_vspace(8))
@@ -1247,7 +1347,7 @@ class App(QMainWindow):
             for p in paths:
                 try: items.append((p, os.path.basename(p), *pdf_info(p)))
                 except Exception: pass
-            QTimer.singleShot(0, lambda: self._mg_insert(items))
+            self._post(self._mg_insert, items)
         threading.Thread(target=_load, daemon=True).start()
 
     def _mg_insert(self, items):
@@ -1309,11 +1409,24 @@ class App(QMainWindow):
         self._mg_prog.working("Preparing…")
 
         paths = list(self._mg_paths)
+        smart_letter = self._mg_letter.isChecked()
 
         def _cb(done, total, name):
-            QTimer.singleShot(0, lambda: self._mg_prog.step(done, total, name))
-        def _ok(pg):
-            self._mg_prog.done(f"Merged {len(paths)} PDFs  ({pg} pages total)", out)
+            self._post(self._mg_prog.step, done, total, name)
+        def _ok(result):
+            pages, fit_counts = result
+            fit_note = ""
+            if smart_letter:
+                fit_note = (
+                    f" · Letter fit: {fit_counts['unchanged']} unchanged, "
+                    f"{fit_counts['stretched']} stretched, "
+                    f"{fit_counts['scaled down']} reduced, "
+                    f"{fit_counts['scaled up']} enlarged"
+                )
+            self._mg_prog.done(
+                f"Merged {len(paths)} PDFs  ({pages} pages total){fit_note}",
+                out,
+            )
             self._mg_btn.setDisabled(False); self._mg_btn.setText("Merge PDFs")
             self._sb.showMessage(f"Merged → {os.path.basename(out)}")
         def _err(e):
@@ -1322,7 +1435,7 @@ class App(QMainWindow):
             QMessageBox.critical(self, "Merge failed", str(e))
 
         self._run_bg(
-            lambda: do_merge(paths, out, _cb),
+            lambda: do_merge(paths, out, _cb, smart_letter),
             _ok, _err)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -1448,12 +1561,16 @@ class App(QMainWindow):
             found = False
             for pnum, text in do_extract(path, frm, to):
                 s = text.strip(); found = found or bool(s)
-                QTimer.singleShot(0, lambda s=s, n=pnum: self._txt_add(
-                    f"Page {n}\n{'─'*44}\n{s}\n\n"))
+                self._post(
+                    self._txt_add,
+                    f"Page {pnum}\n{'─'*44}\n{s}\n\n",
+                )
             if not found:
-                QTimer.singleShot(0, lambda: self._txt_add(
-                    "(No selectable text — PDF may be scanned/image-based)"))
-            QTimer.singleShot(0, self._ex_done)
+                self._post(
+                    self._txt_add,
+                    "(No selectable text — PDF may be scanned/image-based)",
+                )
+            self._post(self._ex_done)
         threading.Thread(target=_stream, daemon=True).start()
 
     def _txt_add(self, chunk):
@@ -1644,7 +1761,7 @@ class App(QMainWindow):
             for p in paths:
                 try: items.append((p, os.path.basename(p), *pdf_info(p)))
                 except Exception: pass
-            QTimer.singleShot(0, lambda: self._vdb_insert(items))
+            self._post(self._vdb_insert, items)
         threading.Thread(target=_load, daemon=True).start()
 
     def _vdb_insert(self, items):
@@ -1686,8 +1803,12 @@ class App(QMainWindow):
 
         def _cb(fi, ft, fname, pi, pt):
             detail = f"File {fi+1}/{ft}  —  {fname}  page {pi}/{pt}"
-            QTimer.singleShot(0, lambda d=detail, fi=fi, ft=ft, pi=pi, pt=pt:
-                self._vdb_prog.step(fi*pt+pi, max(ft*pt, 1), d))
+            self._post(
+                self._vdb_prog.step,
+                fi * pt + pi,
+                max(ft * pt, 1),
+                detail,
+            )
 
         def _ok(res):
             n_chunks, coll_name = res
