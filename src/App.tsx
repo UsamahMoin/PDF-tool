@@ -4,6 +4,7 @@ import { StatusBar } from './components/StatusBar'
 import { SplitTab } from './components/SplitTab'
 import { MergeTab } from './components/MergeTab'
 import { ExtractTab } from './components/ExtractTab'
+import { CompressTab } from './components/CompressTab'
 import { ScanTab } from './components/ScanTab'
 import { ConfirmModal } from './components/ConfirmModal'
 import { DirtyAPI, DirtyContext, DirtyInfo } from './lib/dirtyContext'
@@ -12,6 +13,7 @@ const TAB_LABELS: Record<string, string> = {
   split: 'Split',
   merge: 'Merge',
   extract: 'Extract',
+  compress: 'Compress',
   scan: 'Photos → PDF',
 }
 
@@ -47,6 +49,11 @@ export default function App() {
         id: 'extract',
         label: <ResponsiveLabel full="Extract Text" short="Extract" />,
         content: <ExtractTab setStatus={setStatus} />,
+      },
+      {
+        id: 'compress',
+        label: 'Compress',
+        content: <CompressTab setStatus={setStatus} />,
       },
       {
         id: 'scan',
@@ -88,7 +95,7 @@ export default function App() {
           </div>
           <div className="text-[13.5px] font-semibold text-cream">PDF Tool</div>
           <div className="ml-3 text-[11.5px] text-stone hidden sm:block">
-            Split · Merge · Extract · Scan
+            Split · Merge · Extract · Compress · Scan
           </div>
         </header>
         <main className="flex-1 min-h-0">

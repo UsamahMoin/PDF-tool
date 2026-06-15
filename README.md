@@ -1,12 +1,13 @@
 # PDF Tool
 
-A cross-platform PDF utility with an Anthropic/Claude-inspired UI. Split, merge, extract text, and scan photos into PDFs — from the web, iOS, Android, or your desktop.
+A cross-platform PDF utility with an Anthropic/Claude-inspired UI. Split, merge, extract text, compress, and scan photos into PDFs — from the web, iOS, Android, or your desktop.
 
 ## Features
 
 - **Split** — break a PDF into pages or custom ranges
 - **Merge** — combine multiple PDFs with drag-and-drop reordering
 - **Extract Text** — pull text out of any PDF
+- **Compress** — reduce image-heavy PDFs with selectable size/quality presets
 - **Photos → PDF** — scan documents from your camera/photo library, with corner-point perspective warp for clean output
 
 ## Platforms

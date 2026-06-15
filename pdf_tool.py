@@ -1,54 +1,277 @@
 #!/usr/bin/env python3
-"""PDF Tool — Split · Merge · Extract · Vector DB"""
+"""PDF Tool — Split · Merge · Extract · Vector DB · Rearrange · Compress · Scan  (PyQt6)"""
 
-import os, math, threading, subprocess, textwrap, tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import os, math, threading, subprocess, textwrap, sys
 from pypdf import PdfReader, PdfWriter
 
 try:
-    from tkinterdnd2 import TkinterDnD, DND_FILES
-    _DND  = True
-    _Base = TkinterDnD.Tk
+    import cv2
+    import numpy as np
+    _CV2 = True
 except ImportError:
-    _DND  = False
-    _Base = tk.Tk
+    _CV2 = False
 
-# ── Tokens — Anthropic / Claude-inspired ──────────────────────────────────────
-BG     = "#0F0F0F"   # near-black window bg
-CARD   = "#1A1A1A"   # elevated surfaces
-CARD2  = "#252525"   # raised elements / button bg
-BORDER = "#333333"   # dividers / subtle borders
-FG     = "#EBE5DC"   # primary text — warm off-white
-FG2    = "#7A7572"   # secondary / muted text
-ACCENT = "#CF5F2A"   # Anthropic coral-orange
-A_HOV  = "#DC6D38"   # accent hover
-GREEN  = "#4EB87D"   # success
-RED    = "#D94040"   # error
-FONT   = "SF Pro Display"
+try:
+    from PIL import Image as PilImage
+    _PIL = True
+except ImportError:
+    _PIL = False
 
-# ── Utility ───────────────────────────────────────────────────────────────────
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QTabWidget,
+    QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QLineEdit, QProgressBar, QFileDialog, QMessageBox,
+    QFrame, QTableWidget, QTableWidgetItem, QHeaderView,
+    QTextEdit, QSizePolicy, QStatusBar, QAbstractItemView,
+    QScrollArea, QRadioButton, QButtonGroup, QSplitter,
+    QListWidget, QListWidgetItem, QComboBox, QCheckBox,
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QMimeData, QUrl, QRectF, QPointF, QSize, QObject
+from PyQt6.QtGui import (QFont, QTextCursor, QDragEnterEvent, QDropEvent,
+                          QPainter, QPen, QBrush, QPolygonF, QPixmap, QColor,
+                          QIcon, QCursor)
+
+# ── Color tokens ───────────────────────────────────────────────────────────────
+BG     = "#0F0F0F"
+CARD   = "#1A1A1A"
+CARD2  = "#252525"
+BORDER = "#333333"
+FG     = "#EBE5DC"
+FG2    = "#7A7572"
+ACCENT = "#CF5F2A"
+A_HOV  = "#DC6D38"
+GREEN  = "#4EB87D"
+RED    = "#D94040"
+
+QSS = f"""
+* {{
+    font-family: "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+}}
+QMainWindow, QWidget {{
+    background: {BG};
+    color: {FG};
+}}
+/* ── Tabs ──────────────────────────────────────────────────────────── */
+QTabWidget::pane {{
+    border: none;
+    border-top: 1px solid {BORDER};
+    background: {BG};
+}}
+QTabBar {{
+    background: {BG};
+    border: none;
+}}
+QTabBar::tab {{
+    background: {BG};
+    color: {FG2};
+    padding: 10px 24px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    font-size: 11pt;
+    margin: 0;
+}}
+QTabBar::tab:selected {{
+    color: {FG};
+    font-weight: bold;
+    border-bottom: 2px solid {ACCENT};
+}}
+QTabBar::tab:hover:!selected {{
+    color: {FG};
+}}
+/* ── Buttons ───────────────────────────────────────────────────────── */
+QPushButton {{
+    background: {CARD2};
+    color: {FG};
+    border: none;
+    padding: 6px 16px;
+    border-radius: 4px;
+    font-size: 10pt;
+}}
+QPushButton:hover  {{ background: {BORDER}; }}
+QPushButton:pressed {{ background: {BORDER}; }}
+QPushButton:disabled {{ background: {CARD}; color: {FG2}; }}
+
+QPushButton[cls="primary"] {{
+    background: {ACCENT};
+    color: white;
+    font-size: 12pt;
+    font-weight: bold;
+    padding: 11px 40px;
+    border-radius: 6px;
+    min-width: 160px;
+}}
+QPushButton[cls="primary"]:hover   {{ background: {A_HOV}; }}
+QPushButton[cls="primary"]:pressed {{ background: {A_HOV}; }}
+QPushButton[cls="primary"]:disabled {{ background: {CARD2}; color: {FG2}; }}
+
+QPushButton[cls="stepper"] {{
+    background: {CARD2};
+    color: {FG};
+    font-size: 15pt;
+    font-weight: bold;
+    padding: 2px 10px;
+    border-radius: 4px;
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 34px;
+    max-height: 34px;
+}}
+QPushButton[cls="stepper"]:hover  {{ background: {BORDER}; }}
+
+/* ── Inputs ────────────────────────────────────────────────────────── */
+QLineEdit {{
+    background: {CARD};
+    color: {FG};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    padding: 7px 10px;
+    font-size: 11pt;
+    selection-background-color: {ACCENT};
+}}
+QLineEdit:focus {{ border-color: {ACCENT}; }}
+QLineEdit:read-only {{ color: {FG2}; }}
+
+QTextEdit {{
+    background: {CARD};
+    color: {FG};
+    border: none;
+    border-radius: 4px;
+    padding: 6px;
+    font-family: "Menlo", "Monaco", "Courier New", monospace;
+    font-size: 10pt;
+    selection-background-color: {ACCENT};
+}}
+
+/* ── Progress bar ──────────────────────────────────────────────────── */
+QProgressBar {{
+    background: {CARD2};
+    border: none;
+    border-radius: 2px;
+    max-height: 4px;
+}}
+QProgressBar::chunk {{
+    background: {ACCENT};
+    border-radius: 2px;
+}}
+
+/* ── Tables ────────────────────────────────────────────────────────── */
+QTableWidget {{
+    background: {CARD};
+    color: {FG};
+    border: none;
+    border-radius: 4px;
+    gridline-color: {BORDER};
+    selection-background-color: {ACCENT};
+    selection-color: white;
+    outline: none;
+}}
+QTableWidget::item {{ padding: 5px 8px; border: none; }}
+QTableWidget::item:selected {{ background: {ACCENT}; }}
+QHeaderView::section {{
+    background: {CARD2};
+    color: {FG2};
+    border: none;
+    border-bottom: 1px solid {BORDER};
+    padding: 6px 8px;
+    font-size: 9pt;
+    font-weight: bold;
+}}
+QTableCornerButton::section {{ background: {CARD2}; border: none; }}
+
+/* ── Scrollbars ────────────────────────────────────────────────────── */
+QScrollBar:vertical {{
+    background: {CARD};
+    width: 8px;
+    border: none;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {BORDER};
+    border-radius: 4px;
+    min-height: 24px;
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{
+    background: {CARD};
+    height: 8px;
+    border: none;
+    margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: {BORDER};
+    border-radius: 4px;
+    min-width: 24px;
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+
+/* ── Radio buttons ─────────────────────────────────────────────────── */
+QRadioButton {{
+    color: {FG};
+    spacing: 8px;
+    font-size: 11pt;
+}}
+QRadioButton::indicator {{
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 2px solid {BORDER};
+    background: {CARD};
+}}
+QRadioButton::indicator:checked {{
+    background: {ACCENT};
+    border-color: {ACCENT};
+}}
+QRadioButton::indicator:hover {{ border-color: {ACCENT}; }}
+
+/* ── Status bar ────────────────────────────────────────────────────── */
+QStatusBar {{
+    background: {CARD};
+    color: {FG2};
+    font-size: 9pt;
+    border-top: 1px solid {BORDER};
+    padding: 2px 12px;
+}}
+
+/* ── Misc ──────────────────────────────────────────────────────────── */
+QFrame[cls="divider"] {{
+    background: {BORDER};
+    max-height: 1px;
+    min-height: 1px;
+}}
+QLabel[cls="section"] {{
+    color: {FG2};
+    font-size: 9pt;
+    font-weight: bold;
+}}
+QLabel[cls="info"] {{
+    color: {FG2};
+    font-size: 10pt;
+}}
+QLabel[cls="status-ok"]  {{ color: {GREEN}; font-size: 10pt; }}
+QLabel[cls="status-err"] {{ color: {RED};   font-size: 10pt; }}
+"""
+
+# ── Utility ────────────────────────────────────────────────────────────────────
 
 def fmt_size(path):
     b = os.path.getsize(path)
-    for u in ("B","KB","MB","GB"):
+    for u in ("B", "KB", "MB", "GB"):
         if b < 1024: return f"{b:.1f} {u}"
         b /= 1024
 
-def stem(path): return os.path.splitext(os.path.basename(path))[0]
-
-def reveal(path):
-    subprocess.call(["open", path if os.path.isdir(path) else os.path.dirname(path)])
+def stem(path):  return os.path.splitext(os.path.basename(path))[0]
+def reveal(path): subprocess.call(["open", path if os.path.isdir(path) else os.path.dirname(path)])
 
 def parse_spec(spec, total):
     pages = set()
-    for p in spec.replace(" ","").split(","):
+    for p in spec.replace(" ", "").split(","):
         if not p: continue
         try:
             if "-" in p:
-                a,b = p.split("-",1); pages.update(range(int(a)-1,int(b)))
+                a, b = p.split("-", 1); pages.update(range(int(a)-1, int(b)))
             else: pages.add(int(p)-1)
         except ValueError: pass
-    return sorted(x for x in pages if 0<=x<total)
+    return sorted(x for x in pages if 0 <= x < total)
 
 def pdf_info(path): return len(PdfReader(path).pages), fmt_size(path)
 
@@ -58,7 +281,7 @@ def chunk_text(text, size, overlap):
         out.append(text[s:s+size]); s += size-overlap
     return [c for c in out if c.strip()]
 
-# ── PDF workers ───────────────────────────────────────────────────────────────
+# ── PDF workers ────────────────────────────────────────────────────────────────
 
 def do_split(src, outdir, mode, value, spec, cb):
     r = PdfReader(src); total = len(r.pages); name = stem(src); out = []
@@ -67,30 +290,30 @@ def do_split(src, outdir, mode, value, spec, cb):
         if not idx: raise ValueError("No valid pages in custom spec.")
         w = PdfWriter()
         for i in idx: w.add_page(r.pages[i])
-        fn = f"{name}_custom_{len(idx)}pages.pdf"; p = os.path.join(outdir,fn)
-        with open(p,"wb") as f: w.write(f)
-        out.append(p); cb(1,1,fn)
+        fn = f"{name}_custom_{len(idx)}pages.pdf"; p = os.path.join(outdir, fn)
+        with open(p, "wb") as f: w.write(f)
+        out.append(p); cb(1, 1, fn)
     else:
-        cs = value if mode=="pages" else math.ceil(total/value)
-        nc = math.ceil(total/cs); s=n=0
+        cs = value if mode == "pages" else math.ceil(total/value)
+        nc = math.ceil(total/cs); s = n = 0
         while s < total:
-            n+=1; e=min(s+cs,total); w=PdfWriter(); w.append(r,pages=range(s,e))
-            fn = f"{name}_part{n:03d}_p{s+1}-{e}.pdf"; p = os.path.join(outdir,fn)
-            with open(p,"wb") as f: w.write(f)
-            out.append(p); cb(n,nc,fn); s=e
+            n += 1; e = min(s+cs, total); w = PdfWriter(); w.append(r, pages=range(s, e))
+            fn = f"{name}_part{n:03d}_p{s+1}-{e}.pdf"; p = os.path.join(outdir, fn)
+            with open(p, "wb") as f: w.write(f)
+            out.append(p); cb(n, nc, fn); s = e
     return out
 
 def do_merge(paths, output, cb):
     w = PdfWriter(); total = 0
-    for i,p in enumerate(paths):
+    for i, p in enumerate(paths):
         rr = PdfReader(p); w.append(rr); total += len(rr.pages)
-        cb(i+1,len(paths),os.path.basename(p))
-    with open(output,"wb") as f: w.write(f)
+        cb(i+1, len(paths), os.path.basename(p))
+    with open(output, "wb") as f: w.write(f)
     return total
 
 def do_extract(path, start, end):
     r = PdfReader(path)
-    for i in range(start,end): yield i+1,(r.pages[i].extract_text() or "")
+    for i in range(start, end): yield i+1, (r.pages[i].extract_text() or "")
 
 def do_vectordb(pdf_paths, outdir, coll, chunk_sz, overlap, cb):
     import chromadb
@@ -98,901 +321,1238 @@ def do_vectordb(pdf_paths, outdir, coll, chunk_sz, overlap, cb):
     client = chromadb.PersistentClient(path=outdir)
     try: client.delete_collection(coll)
     except Exception: pass
-    col = client.create_collection(name=coll, metadata={"hnsw:space":"cosine"})
-    ids,docs,metas = [],[],[]
-    for fi,path in enumerate(pdf_paths):
+    col = client.create_collection(name=coll, metadata={"hnsw:space": "cosine"})
+    ids, docs, metas = [], [], []
+    for fi, path in enumerate(pdf_paths):
         r = PdfReader(path); np = len(r.pages); fn = os.path.basename(path)
-        for pi,page in enumerate(r.pages):
-            cb(fi,len(pdf_paths),fn,pi+1,np)
-            for ci,chunk in enumerate(chunk_text(page.extract_text() or "",chunk_sz,overlap)):
+        for pi, page in enumerate(r.pages):
+            cb(fi, len(pdf_paths), fn, pi+1, np)
+            for ci, chunk in enumerate(chunk_text(page.extract_text() or "", chunk_sz, overlap)):
                 ids.append(f"{stem(path)}_p{pi+1}_c{ci}")
                 docs.append(chunk)
-                metas.append({"source":fn,"page":pi+1,"chunk":ci})
-    for i in range(0,len(ids),100):
-        col.upsert(ids=ids[i:i+100],documents=docs[i:i+100],metadatas=metas[i:i+100])
+                metas.append({"source": fn, "page": pi+1, "chunk": ci})
+    for i in range(0, len(ids), 100):
+        col.upsert(ids=ids[i:i+100], documents=docs[i:i+100], metadatas=metas[i:i+100])
     return len(ids), coll
 
-# ── Shared widgets ────────────────────────────────────────────────────────────
+def do_rearrange(src, outdir, order):
+    """Write a new PDF with pages in the given order (0-based indices)."""
+    r = PdfReader(src); w = PdfWriter()
+    for i in order: w.add_page(r.pages[i])
+    fn = f"{stem(src)}_rearranged.pdf"
+    p  = os.path.join(outdir, fn)
+    with open(p, "wb") as f: w.write(f)
+    return p
 
-class TabbedPane(tk.Frame):
+def do_compress(src, out, level, cb):
+    """Compress PDF. Uses Ghostscript if available, else pypdf stream compression."""
+    cb("Compressing…")
+    gs_map = {"Screen (smallest)": "/screen", "eBook": "/ebook",
+              "Print": "/printer",  "Prepress (largest)": "/prepress"}
+    gs_setting = gs_map.get(level, "/ebook")
+
+    # Try Ghostscript
+    for gs_cmd in ("gs", "gswin64c", "gswin32c"):
+        try:
+            res = subprocess.run(
+                [gs_cmd, "-dBATCH", "-dNOPAUSE", "-dQUIET",
+                 "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
+                 f"-dPDFSETTINGS={gs_setting}", f"-sOutputFile={out}", src],
+                capture_output=True, timeout=120)
+            if res.returncode == 0:
+                return out, "Ghostscript"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    # Fall back: pypdf stream compression
+    r = PdfReader(src); w = PdfWriter()
+    w.append(r)
+    for page in w.pages:
+        page.compress_content_streams()
+    with open(out, "wb") as f: w.write(f)
+    return out, "pypdf"
+
+def do_scan_pages_to_pdf(pages, out_path, output_size, grayscale, cb):
     """
-    Custom tab bar using ttk.Button tabs (single-click reliable on macOS).
-    Content switching: grid() / grid_remove() — all frames occupy the same
-    cell (row=0,col=0); grid_remove() hides without forgetting grid options
-    so grid() alone restores the frame instantly.
+    pages: list of (image_path, [(x,y) * 4]) — corners in IMAGE-pixel coords,
+                                              order TL, TR, BR, BL.
+    output_size: "Auto" | "A4" | "Letter"
     """
+    if not _CV2:
+        raise RuntimeError("Install opencv-python:  pip install opencv-python")
+    if not _PIL:
+        raise RuntimeError("Install Pillow:  pip install Pillow")
 
-    def __init__(self, parent, **kw):
-        super().__init__(parent, bg=BG, **kw)
+    pil_pages = []
+    for i, (path, corners) in enumerate(pages):
+        cb(i+1, len(pages), os.path.basename(path))
 
-        # Tab strip
-        self._strip = tk.Frame(self, bg=CARD2)
-        self._strip.pack(fill="x")
+        # numpy 2.x compat: use np.asarray rather than passing tuples to np.float32
+        img = cv2.imread(path)
+        if img is None:
+            raise ValueError(f"Cannot load image: {path}")
 
-        # 2-px coral accent underline, repositioned via place on each select()
-        self._accent = tk.Frame(self._strip, bg=ACCENT, height=2)
+        src = np.asarray(corners, dtype=np.float32)         # shape (4, 2)
+        if src.shape != (4, 2):
+            raise ValueError(f"Bad corner data for {os.path.basename(path)}")
 
-        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        if output_size == "A4":
+            ow, oh = 1240, 1754                             # ~150 dpi
+        elif output_size == "Letter":
+            ow, oh = 1275, 1650
+        else:                                               # Auto
+            tl, tr, br, bl = src
+            w = max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl))
+            h = max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl))
+            # Cap output at ~3000 px on the long side to keep things fast
+            ow, oh = max(2, int(round(w))), max(2, int(round(h)))
+            cap = 3000
+            if max(ow, oh) > cap:
+                s = cap / max(ow, oh)
+                ow, oh = max(2, int(ow*s)), max(2, int(oh*s))
 
-        # Body — all tab frames grid into cell (0,0); only one is shown at a time
-        self._body = tk.Frame(self, bg=BG)
-        self._body.pack(fill="both", expand=True)
-        self._body.rowconfigure(0, weight=1)
-        self._body.columnconfigure(0, weight=1)
+        dst = np.array([[0, 0], [ow-1, 0], [ow-1, oh-1], [0, oh-1]], dtype=np.float32)
 
-        self._tabs: list[tuple[ttk.Button, tk.Frame]] = []
+        M      = cv2.getPerspectiveTransform(src, dst)
+        warped = cv2.warpPerspective(img, M, (ow, oh))
 
-    def add(self, frame, text):
-        idx = len(self._tabs)
-        btn = ttk.Button(self._strip, text=text,
-                         style="Tab.TButton", cursor="hand2",
-                         command=lambda i=idx: self.select(i))
-        btn.pack(side="left")
-        # Place frame in the grid cell but hide it; select() will reveal it
-        frame.grid(row=0, column=0, sticky="nsew")
-        frame.grid_remove()
-        self._tabs.append((btn, frame))
+        if grayscale:
+            warped = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+            pil_img = PilImage.fromarray(warped).convert("L")
+        else:
+            warped = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
+            pil_img = PilImage.fromarray(warped).convert("RGB")
+        pil_pages.append(pil_img)
 
-    def _reposition_accent(self, btn):
-        self._strip.update_idletasks()
-        self._accent.place(in_=self._strip,
-                           x=btn.winfo_x(), rely=1.0, anchor="sw",
-                           width=btn.winfo_width(), height=2)
-        self._accent.lift()
+    if not pil_pages:
+        raise ValueError("No pages to convert")
 
-    def select(self, idx):
-        for i, (btn, frame) in enumerate(self._tabs):
-            if i == idx:
-                btn.configure(style="TabActive.TButton")
-                frame.grid()          # restore grid — makes it visible
-            else:
-                btn.configure(style="Tab.TButton")
-                frame.grid_remove()   # hide but remember grid options
-        self.after(15, lambda: self._reposition_accent(self._tabs[idx][0]))
+    pil_pages[0].save(out_path, "PDF",
+                      save_all=True,
+                      append_images=pil_pages[1:],
+                      resolution=150.0)
+    return out_path, len(pil_pages)
 
+# ── Shared widgets ─────────────────────────────────────────────────────────────
 
-class DropZone(tk.Canvas):
-    def __init__(self, parent, label, sub, on_click, on_drop=None, **kw):
-        super().__init__(parent, height=80, bg=BG, highlightthickness=0, **kw)
-        self._label=label; self._sub=sub; self._hover=False
-        self.bind("<Button-1>",  lambda _: on_click())
-        self.bind("<Enter>",     lambda _: self._hov(True))
-        self.bind("<Leave>",     lambda _: self._hov(False))
-        self.bind("<Configure>", lambda _: self._draw())
-        if on_drop and _DND:
-            self.drop_target_register(DND_FILES)
-            self.dnd_bind("<<Drop>>", on_drop)
+class DropZone(QFrame):
+    """Dashed-border drop target that also responds to click."""
+    clicked      = pyqtSignal()
+    file_dropped = pyqtSignal(str)
 
-    def _hov(self, v):
-        self._hover=v; self._draw()
-        self.config(cursor="hand2" if v else "")
+    def __init__(self, label, sub, parent=None):
+        super().__init__(parent)
+        self._label_text = label
+        self._sub_text   = sub
+        self._hover      = False
+        self.setAcceptDrops(True)
+        self.setFixedHeight(88)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-    def _draw(self):
-        self.delete("all")
-        W = max(self.winfo_width(), 1); H = max(self.winfo_height(), 1)
-        c = ACCENT if self._hover else BORDER
-        self.create_rectangle(16, 8, W-16, H-8,
-            outline=c, fill=CARD, width=1, dash=(6,4))
-        self.create_text(W//2, H//2-9, text=self._label,
-            fill=FG, font=(FONT,11,"bold"), anchor="center")
-        self.create_text(W//2, H//2+10, text=self._sub,
-            fill=ACCENT if self._hover else FG2,
-            font=(FONT,9), anchor="center")
+        lay = QVBoxLayout(self)
+        lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.setSpacing(5)
+        lay.setContentsMargins(16, 12, 16, 12)
+
+        self._top = QLabel(label)
+        self._top.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        f = self._top.font(); f.setBold(True); f.setPointSize(11); self._top.setFont(f)
+
+        self._bot = QLabel(sub)
+        self._bot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._bot.setStyleSheet(f"font-size: 9pt;")
+
+        lay.addWidget(self._top)
+        lay.addWidget(self._bot)
+        self._refresh()
+
+    def _refresh(self):
+        bc = ACCENT if self._hover else BORDER
+        tc = ACCENT if self._hover else FG2
+        self.setStyleSheet(f"""
+            DropZone {{
+                background: {CARD};
+                border: 1px dashed {bc};
+                border-radius: 6px;
+            }}
+        """)
+        self._top.setStyleSheet(f"color: {FG}; background: transparent;")
+        self._bot.setStyleSheet(f"color: {tc}; font-size: 9pt; background: transparent;")
 
     def set(self, label, sub=""):
-        self._label=label; self._sub=sub; self._draw()
+        self._top.setText(label)
+        self._bot.setText(sub or self._sub_text)
+
+    def enterEvent(self, e):     self._hover = True;  self._refresh()
+    def leaveEvent(self, e):     self._hover = False; self._refresh()
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton: self.clicked.emit()
+
+    def dragEnterEvent(self, e: QDragEnterEvent):
+        if e.mimeData().hasUrls():
+            if any(u.toLocalFile().lower().endswith(".pdf")
+                   for u in e.mimeData().urls()):
+                e.acceptProposedAction()
+                self._hover = True; self._refresh()
+
+    def dragLeaveEvent(self, e):
+        self._hover = False; self._refresh()
+
+    def dropEvent(self, e: QDropEvent):
+        self._hover = False; self._refresh()
+        for url in e.mimeData().urls():
+            p = url.toLocalFile()
+            if p.lower().endswith(".pdf"):
+                self.file_dropped.emit(p); break
 
 
-class Stepper(tk.Frame):
-    """[ − ]  value  [ + ] — replaces tiny spinbox arrows."""
+class Stepper(QWidget):
+    """[ − ]  [value]  [ + ] — cleaner than spinbox arrows."""
 
-    def __init__(self, parent, from_=1, to=9999, initial=1, step=1, width=5, **kw):
-        super().__init__(parent, bg=BG, **kw)
+    def __init__(self, from_=1, to=9999, initial=1, step=1, parent=None):
+        super().__init__(parent)
         self._from = from_; self._to = to; self._step = step
-        self._var = tk.StringVar(value=str(initial))
-        ttk.Button(self, text="−", style="Stepper.TButton",
-                   command=self._dec).pack(side="left")
-        ttk.Entry(self, textvariable=self._var, width=width,
-                  justify="center", font=(FONT,12)).pack(side="left", padx=2)
-        ttk.Button(self, text="+", style="Stepper.TButton",
-                   command=self._inc).pack(side="left")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        self._dec = QPushButton("−"); self._dec.setProperty("cls", "stepper")
+        self._dec.style().unpolish(self._dec); self._dec.style().polish(self._dec)
+        self._dec.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self._entry = QLineEdit(str(initial))
+        self._entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._entry.setFixedWidth(64); self._entry.setFixedHeight(34)
+
+        self._inc = QPushButton("+"); self._inc.setProperty("cls", "stepper")
+        self._inc.style().unpolish(self._inc); self._inc.style().polish(self._inc)
+        self._inc.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        lay.addWidget(self._dec)
+        lay.addWidget(self._entry)
+        lay.addWidget(self._inc)
+
+        self._dec.clicked.connect(self._do_dec)
+        self._inc.clicked.connect(self._do_inc)
 
     def _val(self):
-        try: return int(self._var.get())
+        try: return int(self._entry.text())
         except: return self._from
 
-    def _dec(self): self._var.set(str(max(self._from, self._val()-self._step)))
-    def _inc(self): self._var.set(str(min(self._to,   self._val()+self._step)))
-    def get(self):  return self._val()
-    def set(self, v): self._var.set(str(v))
+    def _do_dec(self): self._entry.setText(str(max(self._from, self._val()-self._step)))
+    def _do_inc(self): self._entry.setText(str(min(self._to,   self._val()+self._step)))
+    def get(self):     return self._val()
+    def set(self, v):  self._entry.setText(str(v))
 
 
-class ProgBar(tk.Frame):
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG)
-        row = tk.Frame(self, bg=BG)
-        row.pack(fill="x", padx=24, pady=(4,2))
-        self._var  = tk.StringVar()
-        self._lbl  = tk.Label(row, textvariable=self._var,
-                              bg=BG, fg=FG2, font=(FONT,10), anchor="w")
-        self._lbl.pack(side="left", fill="x", expand=True)
-        self._obtn = ttk.Button(row, text="Open in Finder",
-                                style="Secondary.TButton",
-                                cursor="hand2", command=self._open)
+class ProgBar(QWidget):
+    """Label + 4-px progress bar + optional 'Open in Finder' button."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 6, 0, 12)
+        lay.setSpacing(6)
+
+        row = QWidget(); rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+
+        self._lbl = QLabel("")
+        self._open_btn = QPushButton("Open in Finder")
+        self._open_btn.hide()
+        self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_btn.clicked.connect(self._open)
         self._opath = None
-        self._bar = ttk.Progressbar(self, mode="determinate", maximum=100)
-        self._bar.pack(fill="x", padx=24, pady=(0,10))
+
+        rl.addWidget(self._lbl, 1)
+        rl.addWidget(self._open_btn)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100); self._bar.setValue(0)
+        self._bar.setTextVisible(False); self._bar.setFixedHeight(4)
+
+        lay.addWidget(row)
+        lay.addWidget(self._bar)
 
     def working(self, text="Working…"):
-        self._obtn.pack_forget()
-        self._lbl.configure(fg=FG2); self._var.set(text)
-        self._bar.configure(mode="indeterminate"); self._bar.start(10)
+        self._open_btn.hide()
+        self._lbl.setStyleSheet(f"color: {FG2};"); self._lbl.setText(text)
+        self._bar.setRange(0, 0)
 
     def step(self, done, total, detail=""):
-        self._bar.configure(mode="determinate"); self._bar.stop()
         pct = int(done/total*100) if total else 0
-        self._bar["value"] = pct
-        self._lbl.configure(fg=FG2); self._var.set(f"{detail}    {pct}%")
+        self._bar.setRange(0, 100); self._bar.setValue(pct)
+        self._lbl.setStyleSheet(f"color: {FG2};")
+        self._lbl.setText(f"{detail}    {pct}%")
 
     def done(self, text, path=None):
-        self._bar.configure(mode="determinate"); self._bar.stop()
-        self._bar["value"] = 100
-        self._lbl.configure(fg=GREEN); self._var.set(text)
-        if path: self._opath=path; self._obtn.pack(side="right")
+        self._bar.setRange(0, 100); self._bar.setValue(100)
+        self._lbl.setStyleSheet(f"color: {GREEN};"); self._lbl.setText(text)
+        if path: self._opath = path; self._open_btn.show()
 
     def error(self, text):
-        self._bar.configure(mode="determinate"); self._bar.stop()
-        self._bar["value"] = 0
-        self._lbl.configure(fg=RED); self._var.set(text)
+        self._bar.setRange(0, 100); self._bar.setValue(0)
+        self._lbl.setStyleSheet(f"color: {RED};"); self._lbl.setText(text)
 
     def reset(self):
-        self._obtn.pack_forget()
-        self._bar.configure(mode="determinate"); self._bar.stop()
-        self._bar["value"] = 0
-        self._var.set(""); self._lbl.configure(fg=FG2)
+        self._open_btn.hide()
+        self._bar.setRange(0, 100); self._bar.setValue(0)
+        self._lbl.setText(""); self._lbl.setStyleSheet(f"color: {FG2};")
 
     def _open(self):
         if self._opath: reveal(self._opath)
 
 
-def _btn(parent, text, cmd, primary=False, **kw):
-    style = "Primary.TButton" if primary else "Secondary.TButton"
-    return ttk.Button(parent, text=text, command=cmd,
-                      style=style, cursor="hand2", **kw)
+# ── UI helpers ─────────────────────────────────────────────────────────────────
+
+def _section(text):
+    """Small all-caps muted section label."""
+    lbl = QLabel(text)
+    lbl.setProperty("cls", "section")
+    lbl.style().unpolish(lbl); lbl.style().polish(lbl)
+    return lbl
+
+def _divider():
+    """1-px horizontal rule."""
+    f = QFrame(); f.setProperty("cls", "divider")
+    f.style().unpolish(f); f.style().polish(f)
+    return f
+
+def _primary(text):
+    btn = QPushButton(text)
+    btn.setProperty("cls", "primary")
+    btn.style().unpolish(btn); btn.style().polish(btn)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    return btn
+
+def _secondary(text):
+    btn = QPushButton(text)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    return btn
+
+def _vspace(n=12):
+    w = QWidget(); w.setFixedHeight(n); return w
+
+def _hbox(*widgets, spacing=8):
+    w = QWidget(); l = QHBoxLayout(w)
+    l.setContentsMargins(0, 0, 0, 0); l.setSpacing(spacing)
+    for x in widgets:
+        if x is None: l.addStretch()
+        elif isinstance(x, int): l.addSpacing(x)
+        else: l.addWidget(x)
+    return w
 
 
-def _lbl(parent, text, secondary=False, top=None):
-    default_top = 0 if secondary else 18
-    tp = top if top is not None else default_top
-    tk.Label(parent, text=text, bg=BG,
-             fg=FG2 if secondary else FG,
-             font=(FONT, 9 if secondary else 10, "bold")
-             ).pack(anchor="w", padx=24, pady=(tp, 4))
+class ImageCropWidget(QWidget):
+    """
+    Shows an image with 4 draggable orange corner handles.
+    Corners are stored in IMAGE-PIXEL coordinates so they survive resize
+    and can be persisted / restored across page switches.
+    """
+    HANDLE_R = 10
+    image_loaded = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(280)
+        self.setAcceptDrops(True)
+        self._pixmap:  QPixmap | None = None
+        self._path:    str     | None = None
+        self._corners_img: list[QPointF] = []   # IMAGE-pixel coords
+        self._drag_idx = -1
+        self.setMouseTracking(True)
+        self._labels = ["TL", "TR", "BR", "BL"]
+
+    # ── public ──────────────────────────────────────────────────────────────
+    def load(self, path: str):
+        self._path = path
+        self._pixmap = QPixmap(path)
+        self._reset_corners()
+        self.update()
+
+    def clear(self):
+        self._pixmap = None; self._path = None
+        self._corners_img = []; self.update()
+
+    def reset_corners(self):
+        self._reset_corners(); self.update()
+
+    def image_corners_px(self) -> list[tuple[float, float]] | None:
+        if len(self._corners_img) != 4 or self._pixmap is None:
+            return None
+        return [(p.x(), p.y()) for p in self._corners_img]
+
+    def set_image_corners_px(self, corners_px):
+        if not corners_px or len(corners_px) != 4: return
+        self._corners_img = [QPointF(float(x), float(y)) for x, y in corners_px]
+        self.update()
+
+    # ── coord transforms ────────────────────────────────────────────────────
+    def _img_rect(self) -> QRectF:
+        if self._pixmap is None: return QRectF()
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        ww, wh = self.width(), self.height()
+        s = min(ww/pw, wh/ph) * 0.93
+        sw, sh = pw*s, ph*s
+        return QRectF((ww-sw)/2, (wh-sh)/2, sw, sh)
+
+    def _to_widget(self, p_img: QPointF) -> QPointF:
+        if self._pixmap is None: return p_img
+        r = self._img_rect()
+        sx = r.width()  / self._pixmap.width()
+        sy = r.height() / self._pixmap.height()
+        return QPointF(r.x() + p_img.x()*sx, r.y() + p_img.y()*sy)
+
+    def _to_image(self, p_w: QPointF) -> QPointF:
+        if self._pixmap is None: return p_w
+        r = self._img_rect()
+        if r.width() == 0 or r.height() == 0: return p_w
+        sx = self._pixmap.width()  / r.width()
+        sy = self._pixmap.height() / r.height()
+        ix = max(0.0, min(float(self._pixmap.width()),  (p_w.x() - r.x()) * sx))
+        iy = max(0.0, min(float(self._pixmap.height()), (p_w.y() - r.y()) * sy))
+        return QPointF(ix, iy)
+
+    def _reset_corners(self):
+        if self._pixmap is None: self._corners_img = []; return
+        w = float(self._pixmap.width())
+        h = float(self._pixmap.height())
+        m = min(w, h) * 0.05    # 5% inset from edges
+        self._corners_img = [
+            QPointF(m,    m),
+            QPointF(w-m,  m),
+            QPointF(w-m,  h-m),
+            QPointF(m,    h-m),
+        ]
+
+    # ── paint ───────────────────────────────────────────────────────────────
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor(CARD))
+
+        if self._pixmap is None:
+            p.setPen(QColor(FG2))
+            f = p.font(); f.setPointSize(12); p.setFont(f)
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                       "No image loaded\n\nClick + Add  ·  or drag an image here")
+            return
+
+        r = self._img_rect()
+        p.drawPixmap(int(r.x()), int(r.y()), int(r.width()), int(r.height()), self._pixmap)
+
+        widget_corners = [self._to_widget(c) for c in self._corners_img]
+
+        if len(widget_corners) >= 2:
+            pen = QPen(QColor(ACCENT)); pen.setWidth(2); p.setPen(pen)
+            if len(widget_corners) == 4:
+                poly = QPolygonF(widget_corners)
+                p.save(); p.setOpacity(0.18)
+                p.setBrush(QBrush(QColor(ACCENT))); p.setPen(Qt.PenStyle.NoPen)
+                p.drawPolygon(poly); p.restore()
+                p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPolygon(poly)
+            else:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                for i in range(len(widget_corners)-1):
+                    p.drawLine(widget_corners[i].toPoint(), widget_corners[i+1].toPoint())
+
+        for i, pt in enumerate(widget_corners):
+            p.setPen(QPen(QColor("white"), 2))
+            p.setBrush(QBrush(QColor(ACCENT)))
+            p.drawEllipse(pt, self.HANDLE_R, self.HANDLE_R)
+            if i < len(self._labels):
+                p.setPen(QColor("white"))
+                f = p.font(); f.setPointSize(7); f.setBold(True); p.setFont(f)
+                fm  = p.fontMetrics()
+                lbl = self._labels[i]
+                p.drawText(int(pt.x() - fm.horizontalAdvance(lbl)/2),
+                           int(pt.y() + fm.ascent()/2), lbl)
+
+    # ── mouse ───────────────────────────────────────────────────────────────
+    def mousePressEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton: return
+        pos_w = QPointF(e.position())
+        for i, c_img in enumerate(self._corners_img):
+            c_w = self._to_widget(c_img)
+            if (pos_w - c_w).manhattanLength() < self.HANDLE_R * 2.5:
+                self._drag_idx = i; return
+
+    def mouseMoveEvent(self, e):
+        if self._drag_idx >= 0:
+            self._corners_img[self._drag_idx] = self._to_image(QPointF(e.position()))
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        self._drag_idx = -1
+
+    # ── drag-drop image onto widget ─────────────────────────────────────────
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            exts = (".png",".jpg",".jpeg",".bmp",".tiff",".tif",".webp")
+            if any(u.toLocalFile().lower().endswith(exts) for u in e.mimeData().urls()):
+                e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        exts = (".png",".jpg",".jpeg",".bmp",".tiff",".tif",".webp")
+        for url in e.mimeData().urls():
+            p = url.toLocalFile()
+            if any(p.lower().endswith(x) for x in exts):
+                self.load(p)
+                self.image_loaded.emit(p)
+                break
 
 
-def _div(parent):
-    tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", pady=10)
+# ── Main window ────────────────────────────────────────────────────────────────
 
+class App(QMainWindow):
 
-# ── Main window ───────────────────────────────────────────────────────────────
-
-class App(_Base):
+    # Signals so worker threads can deliver results to the GUI thread safely.
+    _bg_done   = pyqtSignal(object, object)   # (callback, result)
+    _bg_failed = pyqtSignal(object, object)   # (callback, exception)
+    _bg_cb     = pyqtSignal(object, tuple)    # (callback, args)  — for progress
 
     def __init__(self):
         super().__init__()
-        self.title("PDF Tool")
-        self.minsize(740, 640)
-        self.configure(bg=BG)
-        self._apply_styles()
+        self.setWindowTitle("PDF Tool")
+        self.setMinimumSize(760, 660)
+        self._bg_done.connect(lambda cb, r: cb(r))
+        self._bg_failed.connect(lambda cb, e: cb(e))
+        self._bg_cb.connect(lambda cb, args: cb(*args))
         self._build()
-        self.eval("tk::PlaceWindow . center")
-        self.after(80, self._activate)
+        self._top_guard_timer = QTimer(self)
+        self._top_guard_timer.timeout.connect(self._sync_fullscreen_top_guard)
+        self._top_guard_timer.start(100)
 
-    def _activate(self):
-        """Force app to foreground on macOS without triggering accessibility dialogs."""
-        self.focus_force()
-        self.lift()
+    def _run_bg(self, fn, on_ok, on_err):
+        """Run fn() in a worker thread; deliver result/exception to main thread via signals."""
+        def _t():
+            try:
+                self._bg_done.emit(on_ok, fn())
+            except Exception as e:
+                self._bg_failed.emit(on_err, e)
+        threading.Thread(target=_t, daemon=True).start()
 
-    def _apply_styles(self):
-        s = ttk.Style(self); s.theme_use("clam")
-        s.configure(".", background=BG, foreground=FG, font=(FONT,11))
-        s.configure("TFrame",    background=BG)
-        s.configure("TLabel",    background=BG, foreground=FG)
-        s.configure("TEntry",
-            fieldbackground=CARD, foreground=FG,
-            insertcolor=FG, borderwidth=0, relief="flat", padding=8)
-        s.configure("TScrollbar",
-            background=CARD2, troughcolor=CARD,
-            borderwidth=0, arrowcolor=FG2)
-        s.configure("TProgressbar",
-            troughcolor=CARD2, background=ACCENT,
-            borderwidth=0, relief="flat")
-        s.configure("TRadiobutton", background=BG, foreground=FG)
-        s.configure("Treeview",
-            background=CARD, foreground=FG,
-            fieldbackground=CARD, rowheight=30, borderwidth=0)
-        s.configure("Treeview.Heading",
-            background=CARD2, foreground=FG2,
-            borderwidth=0, relief="flat", font=(FONT,9,"bold"))
-        s.map("Treeview",
-            background=[("selected",ACCENT)],
-            foreground=[("selected","#ffffff")])
-        # Primary button — Anthropic coral
-        s.configure("Primary.TButton",
-            background=ACCENT, foreground="white",
-            font=(FONT,12,"bold"), borderwidth=0, relief="flat",
-            padding=[32, 11], anchor="center")
-        s.map("Primary.TButton",
-            background=[("active",A_HOV),("disabled",CARD2),("pressed",A_HOV)],
-            foreground=[("active","white"),("disabled",FG2),("pressed","white")])
-        # Secondary button
-        s.configure("Secondary.TButton",
-            background=CARD2, foreground=FG,
-            font=(FONT,10), borderwidth=0, relief="flat",
-            padding=[14, 6], anchor="center")
-        s.map("Secondary.TButton",
-            background=[("active",BORDER),("pressed",BORDER)],
-            foreground=[("active",FG),("pressed",FG)])
-        # Tab bar buttons — inactive
-        s.configure("Tab.TButton",
-            background=CARD2, foreground=FG2,
-            font=(FONT, 11), borderwidth=0, relief="flat",
-            padding=[20, 10], anchor="center")
-        s.map("Tab.TButton",
-            background=[("active", BORDER), ("pressed", BORDER)],
-            foreground=[("active", FG), ("pressed", FG)])
-        # Tab bar buttons — active/selected
-        s.configure("TabActive.TButton",
-            background=BG, foreground=FG,
-            font=(FONT, 11, "bold"), borderwidth=0, relief="flat",
-            padding=[20, 10], anchor="center")
-        s.map("TabActive.TButton",
-            background=[("active", BG), ("pressed", BG)],
-            foreground=[("active", FG), ("pressed", FG)])
-        # Stepper +/- buttons
-        s.configure("Stepper.TButton",
-            background=CARD2, foreground=FG,
-            font=(FONT,13,"bold"), borderwidth=0, relief="flat",
-            padding=[10, 5], anchor="center")
-        s.map("Stepper.TButton",
-            background=[("active",BORDER),("pressed",BORDER)],
-            foreground=[("active",FG),("pressed",FG)])
+    def _post(self, cb, *args):
+        """Call cb(*args) on the GUI thread from any thread."""
+        self._bg_cb.emit(cb, args)
 
     def _build(self):
-        # Custom tabbed pane
-        nb = TabbedPane(self)
-        nb.pack(fill="both", expand=True)
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.tabBar().setExpanding(True)
+        tabs.tabBar().setUsesScrollButtons(True)
+        tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
+        self.setCentralWidget(tabs)
 
-        for text, builder in [
-            ("  Split  ",        self._split_tab),
-            ("  Merge  ",        self._merge_tab),
-            ("  Extract Text  ", self._extract_tab),
-            ("  Vector DB  ",    self._vectordb_tab),
-        ]:
-            f = tk.Frame(nb._body, bg=BG)
-            builder(f)
-            nb.add(f, text)
+        tabs.addTab(self._split_tab(),      "  Split  ")
+        tabs.addTab(self._merge_tab(),      "  Merge  ")
+        tabs.addTab(self._rearrange_tab(),  "  Rearrange  ")
+        tabs.addTab(self._compress_tab(),   "  Compress  ")
+        tabs.addTab(self._extract_tab(),    "  Extract Text  ")
+        tabs.addTab(self._vectordb_tab(),   "  Vector DB  ")
+        tabs.addTab(self._scan_tab(),       "  Scan to PDF  ")
 
-        nb.select(0)  # Start on Split tab
+        self._sb = QStatusBar(); self.setStatusBar(self._sb)
+        self._sb.showMessage("Ready")
 
-        # Status bar
-        sb = tk.Frame(self, bg=CARD, height=26); sb.pack_propagate(False)
-        sb.pack(fill="x")
-        tk.Frame(sb, bg=BORDER, height=1).pack(fill="x", side="top")
-        self._sb_var = tk.StringVar(value="Ready")
-        tk.Label(sb, textvariable=self._sb_var,
-                 bg=CARD, fg=FG2, font=(FONT,9)).pack(side="left", padx=16, pady=4)
+    def _sync_fullscreen_top_guard(self):
+        """Keep tabs below the macOS menu/title overlay while it is visible."""
+        inset = 0
+        if sys.platform == "darwin" and self.isFullScreen():
+            screen = self.screen()
+            screen_top = screen.geometry().top() if screen else 0
+            cursor_y = QCursor.pos().y()
+            current_inset = self.contentsMargins().top()
+            near_top = cursor_y <= screen_top + 64
+            moving_to_tabs = current_inset > 0 and cursor_y <= screen_top + 110
+            if near_top or moving_to_tabs:
+                inset = 58
 
-    def _sb(self, t): self._sb_var.set(t)
-    def _set_busy(self, on): self.config(cursor="watch" if on else "")
+        if self.contentsMargins().top() != inset:
+            self.setContentsMargins(0, inset, 0, 0)
 
     def _run_bg(self, fn, on_ok, on_err):
         def _t():
-            try:    self.after(0, on_ok, fn())
-            except Exception as e: self.after(0, on_err, e)
+            try:    QTimer.singleShot(0, lambda r=fn(): on_ok(r))
+            except Exception as e: QTimer.singleShot(0, lambda e=e: on_err(e))
         threading.Thread(target=_t, daemon=True).start()
 
-    # ═════════════════════════════════════════════════════════════════════════
+    # ──────────────────────────────────────────────────────────────────────────
     # SPLIT TAB
-    # ═════════════════════════════════════════════════════════════════════════
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def _split_tab(self, f):
+    def _split_tab(self):
         self._sp_path = ""
+        page = QWidget(); lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 20, 24, 16); lay.setSpacing(0)
 
-        self._sp_zone = DropZone(f, "Choose a PDF to split",
-            "drag & drop  ·  or click to browse",
-            on_click=self._sp_pick, on_drop=self._sp_drop)
-        self._sp_zone.pack(fill="x", padx=20, pady=(20,0))
-        self._sp_info = tk.Label(f, text="", bg=BG, fg=FG2, font=(FONT,10))
+        # ── Drop zone ────────────────────────────────────────────────────────
+        self._sp_zone = DropZone("Choose a PDF to split",
+                                 "drag & drop  ·  or click to browse")
+        self._sp_zone.clicked.connect(self._sp_pick)
+        self._sp_zone.file_dropped.connect(self._sp_load)
+        lay.addWidget(self._sp_zone)
 
-        _div(f)
+        self._sp_info = QLabel("")
+        self._sp_info.setProperty("cls", "info")
+        self._sp_info.style().unpolish(self._sp_info)
+        self._sp_info.style().polish(self._sp_info)
+        self._sp_info.hide()
+        lay.addWidget(self._sp_info)
+        lay.addWidget(_vspace(8))
 
-        _lbl(f, "SPLIT MODE", secondary=True)
-        mf = tk.Frame(f, bg=BG); mf.pack(anchor="w", padx=24)
-        self._sp_mode = tk.StringVar(value="pages")
-        for v,t in [("pages","Pages per chunk"),
-                    ("parts","Equal parts"),
-                    ("custom","Custom page list")]:
-            tk.Radiobutton(mf, text=t, variable=self._sp_mode, value=v,
-                           command=self._sp_mode_upd,
-                           bg=BG, fg=FG, selectcolor=CARD2,
-                           activebackground=BG, font=(FONT,11)
-                           ).pack(side="left", padx=(0,22))
+        # ── Split mode ───────────────────────────────────────────────────────
+        lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("SPLIT MODE")); lay.addWidget(_vspace(8))
 
-        self._sp_num_f = tk.Frame(f, bg=BG)
-        self._sp_num_f.pack(anchor="w", padx=24, pady=(16,0))
-        self._sp_val_lbl = tk.Label(self._sp_num_f, text="PAGES PER CHUNK",
-                                    bg=BG, fg=FG2, font=(FONT,9,"bold"))
-        self._sp_val_lbl.pack(anchor="w", pady=(0,6))
-        self._sp_val = Stepper(self._sp_num_f, from_=1, to=9999, initial=1)
-        self._sp_val.pack(anchor="w")
+        self._sp_mode_grp = QButtonGroup(self)
+        mode_row = QWidget(); ml = QHBoxLayout(mode_row)
+        ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(24)
+        for v, t in [("pages", "Pages per chunk"),
+                     ("parts", "Equal parts"),
+                     ("custom", "Custom page list")]:
+            rb = QRadioButton(t); self._sp_mode_grp.addButton(rb)
+            rb.setProperty("_val", v)
+            if v == "pages": rb.setChecked(True)
+            rb.toggled.connect(self._sp_mode_upd)
+            ml.addWidget(rb)
+        ml.addStretch()
+        lay.addWidget(mode_row)
+        lay.addWidget(_vspace(14))
 
-        self._sp_cust_f = tk.Frame(f, bg=BG)
-        tk.Label(self._sp_cust_f, text="PAGES TO EXTRACT",
-                 bg=BG, fg=FG2, font=(FONT,9,"bold")).pack(anchor="w", pady=(0,6))
-        ef = tk.Frame(self._sp_cust_f, bg=BG); ef.pack(anchor="w")
-        self._sp_spec = tk.StringVar()
-        ttk.Entry(ef, textvariable=self._sp_spec, width=30).pack(side="left")
-        tk.Label(ef, text="   e.g.  1, 3, 5-10, 15",
-                 bg=BG, fg=FG2, font=(FONT,9)).pack(side="left")
+        # ── Value (pages/parts) ──────────────────────────────────────────────
+        self._sp_val_block = QWidget(); vbl = QVBoxLayout(self._sp_val_block)
+        vbl.setContentsMargins(0, 0, 0, 0); vbl.setSpacing(6)
+        self._sp_val_lbl = _section("PAGES PER CHUNK"); vbl.addWidget(self._sp_val_lbl)
+        self._sp_val = Stepper(from_=1, to=9999, initial=1)
+        vbl.addWidget(self._sp_val)
+        lay.addWidget(self._sp_val_block)
 
-        _div(f)
+        # ── Custom spec (hidden initially) ───────────────────────────────────
+        self._sp_cust_block = QWidget(); cbl = QVBoxLayout(self._sp_cust_block)
+        cbl.setContentsMargins(0, 0, 0, 0); cbl.setSpacing(6)
+        cbl.addWidget(_section("PAGES TO EXTRACT"))
+        cust_row = QWidget(); cl = QHBoxLayout(cust_row)
+        cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(8)
+        self._sp_spec = QLineEdit(); self._sp_spec.setPlaceholderText("e.g.  1, 3, 5-10, 15")
+        self._sp_spec.setFixedWidth(260)
+        cl.addWidget(self._sp_spec); cl.addStretch()
+        cbl.addWidget(cust_row)
+        self._sp_cust_block.hide()
+        lay.addWidget(self._sp_cust_block)
+        lay.addWidget(_vspace(14))
 
-        _lbl(f, "OUTPUT FOLDER", secondary=True)
-        of = tk.Frame(f, bg=BG); of.pack(fill="x", padx=24, pady=(0,6))
-        self._sp_outdir = tk.StringVar()
-        ttk.Entry(of, textvariable=self._sp_outdir,
-                  state="readonly").pack(side="left", fill="x", expand=True)
-        _btn(of, "Browse", self._sp_browse_dir).pack(side="left", padx=(8,0))
+        # ── Output folder ────────────────────────────────────────────────────
+        lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("OUTPUT FOLDER")); lay.addWidget(_vspace(8))
+        of_row = QWidget(); of_l = QHBoxLayout(of_row)
+        of_l.setContentsMargins(0, 0, 0, 0); of_l.setSpacing(8)
+        self._sp_outdir = QLineEdit(); self._sp_outdir.setReadOnly(True)
+        self._sp_outdir.setPlaceholderText("Choose output folder…")
+        browse_btn = _secondary("Browse"); browse_btn.clicked.connect(self._sp_browse_dir)
+        of_l.addWidget(self._sp_outdir, 1); of_l.addWidget(browse_btn)
+        lay.addWidget(of_row)
 
-        _div(f)
+        # ── Action ───────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8))
+        lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addStretch()
+        self._sp_btn = _primary("Split PDF"); self._sp_btn.clicked.connect(self._sp_run)
+        lay.addWidget(self._sp_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(_vspace(4))
+        self._sp_prog = ProgBar(); lay.addWidget(self._sp_prog)
 
-        af = tk.Frame(f, bg=BG); af.pack(pady=(2,0))
-        self._sp_btn = _btn(af, "Split PDF", self._sp_run, primary=True)
-        self._sp_btn.pack()
-        self._sp_prog = ProgBar(f); self._sp_prog.pack(fill="x")
+        return page
 
     def _sp_mode_upd(self):
-        m = self._sp_mode.get()
-        if m == "custom":
-            self._sp_num_f.pack_forget()
-            self._sp_cust_f.pack(anchor="w", padx=24, pady=(16,0))
-        else:
-            self._sp_cust_f.pack_forget()
-            self._sp_num_f.pack(anchor="w", padx=24, pady=(16,0))
-            self._sp_val_lbl.configure(
-                text="PAGES PER CHUNK" if m=="pages" else "NUMBER OF PARTS")
+        checked = self._sp_mode_grp.checkedButton()
+        if checked is None: return
+        m = checked.property("_val")
+        self._sp_cust_block.setVisible(m == "custom")
+        self._sp_val_block.setVisible(m != "custom")
+        if m == "pages": self._sp_val_lbl.setText("PAGES PER CHUNK")
+        elif m == "parts": self._sp_val_lbl.setText("NUMBER OF PARTS")
 
     def _sp_load(self, path):
         self._sp_path = path
         try:
             pages, sz = pdf_info(path)
-            self._sp_info.configure(
-                text=f"  {os.path.basename(path)}   ·   {pages} pages   ·   {sz}")
-            self._sp_info.pack(anchor="w", padx=24, pady=(6,0))
+            self._sp_info.setText(
+                f"  {os.path.basename(path)}   ·   {pages} pages   ·   {sz}")
+            self._sp_info.show()
             self._sp_zone.set(os.path.basename(path), "Click to choose a different file")
-            if not self._sp_outdir.get():
-                self._sp_outdir.set(os.path.dirname(path))
+            if not self._sp_outdir.text():
+                self._sp_outdir.setText(os.path.dirname(path))
             self._sp_prog.reset()
-            self._sb(f"Loaded  {os.path.basename(path)}  ({pages} pages)")
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
+            self._sb.showMessage(f"Loaded  {os.path.basename(path)}  ({pages} pages)")
+        except Exception as e: QMessageBox.critical(self, "Error", str(e))
 
     def _sp_pick(self):
-        p = filedialog.askopenfilename(title="Select PDF to split",
-            filetypes=[("PDF","*.pdf"),("All files","*.*")])
+        p, _ = QFileDialog.getOpenFileName(self, "Select PDF to split",
+                   filter="PDF Files (*.pdf);;All Files (*)")
         if p: self._sp_load(p)
 
-    def _sp_drop(self, e):
-        p = e.data.strip().strip("{}");
-        if p.lower().endswith(".pdf"): self._sp_load(p)
-
     def _sp_browse_dir(self):
-        d = filedialog.askdirectory(title="Output folder")
-        if d: self._sp_outdir.set(d)
+        d = QFileDialog.getExistingDirectory(self, "Output folder")
+        if d: self._sp_outdir.setText(d)
 
     def _sp_run(self):
         if not self._sp_path:
-            messagebox.showwarning("No file","Choose a PDF to split."); return
-        if not self._sp_outdir.get():
-            messagebox.showwarning("No folder","Choose an output folder."); return
+            QMessageBox.warning(self, "No file", "Choose a PDF to split."); return
+        if not self._sp_outdir.text():
+            QMessageBox.warning(self, "No folder", "Choose an output folder."); return
 
-        self._sp_btn.configure(state="disabled", text="Splitting…")
+        self._sp_btn.setDisabled(True); self._sp_btn.setText("Splitting…")
         self._sp_prog.working("Preparing…")
-        self._set_busy(True); self.update()
 
-        path=self._sp_path; outdir=self._sp_outdir.get()
-        mode=self._sp_mode.get(); val=self._sp_val.get(); spec=self._sp_spec.get()
+        path = self._sp_path; outdir = self._sp_outdir.text()
+        checked = self._sp_mode_grp.checkedButton()
+        mode = checked.property("_val") if checked else "pages"
+        val = self._sp_val.get(); spec = self._sp_spec.text()
 
-        def _cb(done,total,name): self.after(0, self._sp_prog.step, done, total, name)
+        def _cb(done, total, name):
+            QTimer.singleShot(0, lambda: self._sp_prog.step(done, total, name))
         def _ok(out):
-            def _():
-                self._sp_prog.done(f"{len(out)} file(s) created", outdir)
-                self._sp_btn.configure(state="normal", text="Split PDF")
-                self._set_busy(False); self._sb(f"Split complete — {len(out)} files")
-            self.after(0, _)
+            self._sp_prog.done(f"{len(out)} file(s) created", outdir)
+            self._sp_btn.setDisabled(False); self._sp_btn.setText("Split PDF")
+            self._sb.showMessage(f"Split complete — {len(out)} files")
         def _err(e):
-            def _():
-                self._sp_prog.error(str(e))
-                self._sp_btn.configure(state="normal", text="Split PDF")
-                self._set_busy(False); messagebox.showerror("Split failed", str(e))
-            self.after(0, _)
+            self._sp_prog.error(str(e))
+            self._sp_btn.setDisabled(False); self._sp_btn.setText("Split PDF")
+            QMessageBox.critical(self, "Split failed", str(e))
 
-        self._run_bg(lambda: do_split(path,outdir,mode,val,spec,_cb), _ok, _err)
+        self._run_bg(
+            lambda: do_split(path, outdir, mode, val, spec, _cb),
+            _ok, _err)
 
-    # ═════════════════════════════════════════════════════════════════════════
+    # ──────────────────────────────────────────────────────────────────────────
     # MERGE TAB
-    # ═════════════════════════════════════════════════════════════════════════
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def _merge_tab(self, f):
+    def _merge_tab(self):
         self._mg_paths: list[str] = []
+        page = QWidget(); lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 20, 24, 16); lay.setSpacing(0)
 
-        _lbl(f, "PDFS TO MERGE", secondary=True, top=20)
-        tv_f = tk.Frame(f, bg=CARD); tv_f.pack(fill="both", expand=True, padx=20)
-        cols = ("num","name","pages","size")
-        self._mg_tv = ttk.Treeview(tv_f, columns=cols, show="headings",
-                                    height=9, selectmode="browse")
-        for col,lbl,w,a in [("num","#",44,"center"),("name","Filename",330,"w"),
-                              ("pages","Pages",74,"center"),("size","Size",90,"e")]:
-            self._mg_tv.heading(col,text=lbl,anchor=a)
-            self._mg_tv.column(col,width=w,anchor=a,stretch=(col=="name"))
-        vsb = ttk.Scrollbar(tv_f, orient="vertical", command=self._mg_tv.yview)
-        self._mg_tv.configure(yscrollcommand=vsb.set)
-        self._mg_tv.pack(side="left",fill="both",expand=True)
-        vsb.pack(side="right",fill="y")
+        # ── File list ────────────────────────────────────────────────────────
+        lay.addWidget(_section("PDFS TO MERGE")); lay.addWidget(_vspace(8))
 
-        cf = tk.Frame(f, bg=BG); cf.pack(fill="x", padx=20, pady=(8,0))
-        for t,cmd in [("Add PDFs",self._mg_add),("Remove",self._mg_del),
-                       ("Move Up",self._mg_up),("Move Down",self._mg_dn),
-                       ("Clear All",self._mg_clear)]:
-            _btn(cf, t, cmd).pack(side="left", padx=(0,6))
-        self._mg_count_var = tk.StringVar()
-        tk.Label(cf, textvariable=self._mg_count_var,
-                 bg=BG, fg=FG2, font=(FONT,10)).pack(side="right")
+        self._mg_tv = QTableWidget(0, 4)
+        self._mg_tv.setHorizontalHeaderLabels(["#", "Filename", "Pages", "Size"])
+        self._mg_tv.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for i, w in [(0, 44), (2, 74), (3, 90)]:
+            self._mg_tv.setHorizontalHeader(self._mg_tv.horizontalHeader())
+            self._mg_tv.setColumnWidth(i, w)
+        self._mg_tv.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self._mg_tv.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._mg_tv.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self._mg_tv.setColumnWidth(0, 44); self._mg_tv.setColumnWidth(2, 74)
+        self._mg_tv.setColumnWidth(3, 90)
+        self._mg_tv.verticalHeader().hide()
+        self._mg_tv.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._mg_tv.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._mg_tv.setAlternatingRowColors(False)
+        lay.addWidget(self._mg_tv, 1)   # stretch=1 → takes available space
+        lay.addWidget(_vspace(8))
 
-        _div(f)
+        # ── Buttons ──────────────────────────────────────────────────────────
+        btn_row = QWidget(); bl = QHBoxLayout(btn_row)
+        bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(6)
+        for t, fn in [("Add PDFs", self._mg_add), ("Remove", self._mg_del),
+                      ("Move Up", self._mg_up), ("Move Down", self._mg_dn),
+                      ("Clear All", self._mg_clear)]:
+            b = _secondary(t); b.clicked.connect(fn); bl.addWidget(b)
+        bl.addStretch()
+        self._mg_count_lbl = QLabel("")
+        self._mg_count_lbl.setStyleSheet(f"color: {FG2}; font-size: 10pt;")
+        bl.addWidget(self._mg_count_lbl)
+        lay.addWidget(btn_row)
 
-        _lbl(f, "SAVE MERGED FILE AS", secondary=True)
-        of = tk.Frame(f, bg=BG); of.pack(fill="x", padx=24, pady=(0,6))
-        self._mg_out = tk.StringVar()
-        ttk.Entry(of, textvariable=self._mg_out,
-                  state="readonly").pack(side="left", fill="x", expand=True)
-        _btn(of, "Browse", self._mg_pick_out).pack(side="left", padx=(8,0))
+        # ── Save path ────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("SAVE MERGED FILE AS")); lay.addWidget(_vspace(8))
+        of_row = QWidget(); of_l = QHBoxLayout(of_row)
+        of_l.setContentsMargins(0, 0, 0, 0); of_l.setSpacing(8)
+        self._mg_out = QLineEdit(); self._mg_out.setReadOnly(True)
+        self._mg_out.setPlaceholderText("Choose save location…")
+        browse_btn = _secondary("Browse"); browse_btn.clicked.connect(self._mg_pick_out)
+        of_l.addWidget(self._mg_out, 1); of_l.addWidget(browse_btn)
+        lay.addWidget(of_row)
 
-        _div(f)
+        # ── Action ───────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        self._mg_btn = _primary("Merge PDFs"); self._mg_btn.clicked.connect(self._mg_run)
+        lay.addWidget(self._mg_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(_vspace(4))
+        self._mg_prog = ProgBar(); lay.addWidget(self._mg_prog)
 
-        af = tk.Frame(f, bg=BG); af.pack(pady=(2,0))
-        self._mg_btn = _btn(af, "Merge PDFs", self._mg_run, primary=True)
-        self._mg_btn.pack()
-        self._mg_prog = ProgBar(f); self._mg_prog.pack(fill="x")
+        return page
 
     def _mg_renum(self):
-        for i,iid in enumerate(self._mg_tv.get_children()):
-            self._mg_tv.set(iid,"num",i+1)
-        n = len(self._mg_paths)
-        self._mg_count_var.set(f"{n} file{'s' if n!=1 else ''} queued" if n else "")
+        for i in range(self._mg_tv.rowCount()):
+            self._mg_tv.item(i, 0).setText(str(i+1))
+        n = self._mg_tv.rowCount()
+        self._mg_count_lbl.setText(f"{n} file{'s' if n!=1 else ''} queued" if n else "")
 
     def _mg_add(self):
-        paths = filedialog.askopenfilenames(title="Add PDFs to merge",
-            filetypes=[("PDF","*.pdf"),("All files","*.*")])
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add PDFs",
+                       filter="PDF Files (*.pdf);;All Files (*)")
         if not paths: return
-        if not self._mg_out.get():
-            self._mg_out.set(os.path.join(os.path.dirname(paths[0]),"merged.pdf"))
+        if not self._mg_out.text():
+            self._mg_out.setText(os.path.join(os.path.dirname(paths[0]), "merged.pdf"))
+
         def _load():
             items = []
             for p in paths:
-                try: items.append((p,os.path.basename(p),*pdf_info(p)))
+                try: items.append((p, os.path.basename(p), *pdf_info(p)))
                 except Exception: pass
-            self.after(0, self._mg_insert, items)
+            QTimer.singleShot(0, lambda: self._mg_insert(items))
         threading.Thread(target=_load, daemon=True).start()
 
     def _mg_insert(self, items):
-        for path,name,pages,size in items:
+        for path, name, pages, size in items:
             self._mg_paths.append(path)
-            self._mg_tv.insert("","end",values=(len(self._mg_paths),name,pages,size))
+            r = self._mg_tv.rowCount(); self._mg_tv.insertRow(r)
+            for c, v in enumerate([str(r+1), name, str(pages), size]):
+                item = QTableWidgetItem(v)
+                item.setTextAlignment(
+                    Qt.AlignmentFlag.AlignCenter if c != 1 else Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                self._mg_tv.setItem(r, c, item)
         self._mg_renum()
 
     def _mg_del(self):
-        sel = self._mg_tv.selection()
-        if not sel: return
-        idx = self._mg_tv.index(sel[0])
-        self._mg_tv.delete(sel[0]); self._mg_paths.pop(idx); self._mg_renum()
+        rows = sorted({i.row() for i in self._mg_tv.selectedItems()}, reverse=True)
+        for r in rows:
+            self._mg_tv.removeRow(r); self._mg_paths.pop(r)
+        self._mg_renum()
 
     def _mg_up(self):
-        sel = self._mg_tv.selection()
-        if not sel: return
-        iid=sel[0]; idx=self._mg_tv.index(iid)
-        if idx==0: return
-        self._mg_tv.move(iid,"",idx-1)
-        self._mg_paths.insert(idx-1,self._mg_paths.pop(idx))
-        self._mg_renum(); self._mg_tv.selection_set(iid)
+        r = self._mg_tv.currentRow()
+        if r <= 0: return
+        self._mg_paths.insert(r-1, self._mg_paths.pop(r))
+        self._mg_tv.insertRow(r-1)
+        for c in range(self._mg_tv.columnCount()):
+            item = self._mg_tv.takeItem(r+1, c)
+            self._mg_tv.setItem(r-1, c, item)
+        self._mg_tv.removeRow(r+1)
+        self._mg_renum(); self._mg_tv.selectRow(r-1)
 
     def _mg_dn(self):
-        sel = self._mg_tv.selection()
-        if not sel: return
-        iid=sel[0]; idx=self._mg_tv.index(iid)
-        if idx>=len(self._mg_paths)-1: return
-        self._mg_tv.move(iid,"",idx+1)
-        self._mg_paths.insert(idx+1,self._mg_paths.pop(idx))
-        self._mg_renum(); self._mg_tv.selection_set(iid)
+        r = self._mg_tv.currentRow()
+        if r < 0 or r >= self._mg_tv.rowCount()-1: return
+        self._mg_paths.insert(r+1, self._mg_paths.pop(r))
+        self._mg_tv.insertRow(r+2)
+        for c in range(self._mg_tv.columnCount()):
+            item = self._mg_tv.takeItem(r, c)
+            self._mg_tv.setItem(r+2, c, item)
+        self._mg_tv.removeRow(r)
+        self._mg_renum(); self._mg_tv.selectRow(r+1)
 
     def _mg_clear(self):
-        self._mg_tv.delete(*self._mg_tv.get_children())
-        self._mg_paths.clear(); self._mg_renum(); self._mg_prog.reset()
+        self._mg_tv.setRowCount(0); self._mg_paths.clear()
+        self._mg_renum(); self._mg_prog.reset()
 
     def _mg_pick_out(self):
-        p = filedialog.asksaveasfilename(title="Save merged PDF as",
-            defaultextension=".pdf", filetypes=[("PDF","*.pdf")])
-        if p: self._mg_out.set(p)
+        p, _ = QFileDialog.getSaveFileName(self, "Save merged PDF as",
+                   filter="PDF Files (*.pdf)")
+        if p: self._mg_out.setText(p if p.endswith(".pdf") else p+".pdf")
 
     def _mg_run(self):
-        if len(self._mg_paths)<2:
-            messagebox.showwarning("Too few files","Add at least 2 PDFs."); return
-        out = self._mg_out.get()
+        if len(self._mg_paths) < 2:
+            QMessageBox.warning(self, "Too few files", "Add at least 2 PDFs."); return
+        out = self._mg_out.text()
         if not out:
-            messagebox.showwarning("No output","Choose where to save."); return
+            QMessageBox.warning(self, "No output", "Choose where to save."); return
 
-        self._mg_btn.configure(state="disabled", text="Merging…")
+        self._mg_btn.setDisabled(True); self._mg_btn.setText("Merging…")
         self._mg_prog.working("Preparing…")
-        self._set_busy(True); self.update()
 
-        paths=list(self._mg_paths)
-        def _cb(done,total,name): self.after(0, self._mg_prog.step, done, total, name)
+        paths = list(self._mg_paths)
+
+        def _cb(done, total, name):
+            QTimer.singleShot(0, lambda: self._mg_prog.step(done, total, name))
         def _ok(pg):
-            def _():
-                self._mg_prog.done(f"Merged {len(paths)} PDFs  ({pg} pages total)", out)
-                self._mg_btn.configure(state="normal", text="Merge PDFs")
-                self._set_busy(False); self._sb(f"Merged → {os.path.basename(out)}")
-            self.after(0,_)
+            self._mg_prog.done(f"Merged {len(paths)} PDFs  ({pg} pages total)", out)
+            self._mg_btn.setDisabled(False); self._mg_btn.setText("Merge PDFs")
+            self._sb.showMessage(f"Merged → {os.path.basename(out)}")
         def _err(e):
-            def _():
-                self._mg_prog.error(str(e))
-                self._mg_btn.configure(state="normal", text="Merge PDFs")
-                self._set_busy(False); messagebox.showerror("Merge failed",str(e))
-            self.after(0,_)
+            self._mg_prog.error(str(e))
+            self._mg_btn.setDisabled(False); self._mg_btn.setText("Merge PDFs")
+            QMessageBox.critical(self, "Merge failed", str(e))
 
-        self._run_bg(lambda: do_merge(paths,out,_cb), _ok, _err)
+        self._run_bg(
+            lambda: do_merge(paths, out, _cb),
+            _ok, _err)
 
-    # ═════════════════════════════════════════════════════════════════════════
-    # EXTRACT TAB
-    # ═════════════════════════════════════════════════════════════════════════
+    # ──────────────────────────────────────────────────────────────────────────
+    # EXTRACT TEXT TAB
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def _extract_tab(self, f):
+    def _extract_tab(self):
         self._ex_path = ""
+        self._fhits: list[tuple[int, int]] = []   # (start, end) char positions
+        self._fidx = 0
 
-        self._ex_zone = DropZone(f, "Choose a PDF to extract text from",
-            "drag & drop  ·  or click to browse",
-            on_click=self._ex_pick, on_drop=self._ex_drop)
-        self._ex_zone.pack(fill="x", padx=20, pady=(20,0))
-        self._ex_info = tk.Label(f, text="", bg=BG, fg=FG2, font=(FONT,10))
+        page = QWidget(); lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 20, 24, 16); lay.setSpacing(0)
 
-        _div(f)
+        # ── Drop zone ────────────────────────────────────────────────────────
+        self._ex_zone = DropZone("Choose a PDF to extract text from",
+                                 "drag & drop  ·  or click to browse")
+        self._ex_zone.clicked.connect(self._ex_pick)
+        self._ex_zone.file_dropped.connect(self._ex_load)
+        lay.addWidget(self._ex_zone)
 
-        _lbl(f, "PAGE RANGE", secondary=True)
-        pr = tk.Frame(f, bg=BG); pr.pack(anchor="w", padx=24)
-        tk.Label(pr, text="From", bg=BG, fg=FG, font=(FONT,11)).pack(side="left", padx=(0,8))
-        self._ex_from = Stepper(pr, from_=1, to=9999, initial=1)
-        self._ex_from.pack(side="left")
-        tk.Label(pr, text="To", bg=BG, fg=FG, font=(FONT,11)).pack(side="left", padx=(16,8))
-        self._ex_to = Stepper(pr, from_=1, to=9999, initial=9999)
-        self._ex_to.pack(side="left")
-        tk.Label(pr, text="  (max = all pages)", bg=BG, fg=FG2,
-                 font=(FONT,9)).pack(side="left", padx=(8,0))
+        self._ex_info = QLabel("")
+        self._ex_info.setProperty("cls", "info")
+        self._ex_info.style().unpolish(self._ex_info)
+        self._ex_info.style().polish(self._ex_info)
+        self._ex_info.hide()
+        lay.addWidget(self._ex_info); lay.addWidget(_vspace(8))
 
-        _div(f)
+        # ── Page range ───────────────────────────────────────────────────────
+        lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("PAGE RANGE")); lay.addWidget(_vspace(8))
+        pr = QWidget(); pl = QHBoxLayout(pr)
+        pl.setContentsMargins(0, 0, 0, 0); pl.setSpacing(12)
+        pl.addWidget(QLabel("From"))
+        self._ex_from = Stepper(from_=1, to=9999, initial=1); pl.addWidget(self._ex_from)
+        pl.addSpacing(8); pl.addWidget(QLabel("To"))
+        self._ex_to = Stepper(from_=1, to=9999, initial=9999); pl.addWidget(self._ex_to)
+        hint = QLabel("  (9999 = all pages)")
+        hint.setStyleSheet(f"color: {FG2}; font-size: 9pt;"); pl.addWidget(hint)
+        pl.addStretch()
+        lay.addWidget(pr)
 
-        af = tk.Frame(f, bg=BG); af.pack(pady=(2,0))
-        self._ex_btn = _btn(af, "Extract Text", self._ex_run, primary=True)
-        self._ex_btn.pack()
-        self._ex_status = tk.StringVar()
-        tk.Label(af, textvariable=self._ex_status,
-                 bg=BG, fg=GREEN, font=(FONT,10)).pack(pady=(4,0))
+        # ── Action ───────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        act_row = QWidget(); al = QHBoxLayout(act_row)
+        al.setContentsMargins(0, 0, 0, 0)
+        self._ex_btn = _primary("Extract Text"); self._ex_btn.clicked.connect(self._ex_run)
+        self._ex_status = QLabel(""); self._ex_status.setStyleSheet(f"color: {GREEN}; font-size: 10pt;")
+        al.addStretch(); al.addWidget(self._ex_btn); al.addSpacing(16)
+        al.addWidget(self._ex_status); al.addStretch()
+        lay.addWidget(act_row)
 
-        _div(f)
+        # ── Results ──────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("EXTRACTED TEXT")); lay.addWidget(_vspace(8))
 
-        _lbl(f, "EXTRACTED TEXT", secondary=True)
-        sf = tk.Frame(f, bg=BG); sf.pack(fill="x", padx=24, pady=(0,8))
-        tk.Label(sf, text="Find", bg=BG, fg=FG2, font=(FONT,10)).pack(side="left")
-        self._find_var = tk.StringVar()
-        self._find_var.trace_add("write", lambda *_: self._find_do())
-        ttk.Entry(sf, textvariable=self._find_var, width=26
-                  ).pack(side="left", padx=(8,0))
-        _btn(sf, "Prev", lambda: self._find_step(-1)).pack(side="left", padx=(8,2))
-        _btn(sf, "Next", lambda: self._find_step(1)).pack(side="left")
-        self._find_cnt = tk.StringVar()
-        tk.Label(sf, textvariable=self._find_cnt,
-                 bg=BG, fg=FG2, font=(FONT,10)).pack(side="left", padx=10)
+        find_row = QWidget(); fl = QHBoxLayout(find_row)
+        fl.setContentsMargins(0, 0, 0, 0); fl.setSpacing(8)
+        fl.addWidget(QLabel("Find"))
+        self._find_edit = QLineEdit(); self._find_edit.setFixedWidth(220)
+        self._find_edit.setPlaceholderText("Search…")
+        self._find_edit.textChanged.connect(self._find_do)
+        prev_btn = _secondary("Prev"); prev_btn.clicked.connect(lambda: self._find_step(-1))
+        next_btn = _secondary("Next"); next_btn.clicked.connect(lambda: self._find_step(1))
+        self._find_cnt = QLabel("")
+        self._find_cnt.setStyleSheet(f"color: {FG2}; font-size: 10pt;")
+        fl.addWidget(self._find_edit); fl.addWidget(prev_btn); fl.addWidget(next_btn)
+        fl.addWidget(self._find_cnt); fl.addStretch()
+        lay.addWidget(find_row); lay.addWidget(_vspace(6))
 
-        tw = tk.Frame(f, bg=BG)
-        tw.pack(fill="both", expand=True, padx=20, pady=(0,4))
-        self._txt = tk.Text(tw, bg=CARD, fg=FG,
-                            font=("Menlo",10), relief="flat", bd=0,
-                            padx=12, pady=10, wrap="word", state="disabled",
-                            selectbackground=ACCENT, selectforeground=FG,
-                            insertbackground=FG)
-        self._txt.tag_configure("match", background="#E8A87C", foreground="#111111")
-        self._txt.tag_configure("cur",   background=ACCENT,   foreground="#ffffff")
-        vsb = ttk.Scrollbar(tw, orient="vertical", command=self._txt.yview)
-        self._txt.configure(yscrollcommand=vsb.set)
-        self._txt.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
+        self._txt = QTextEdit(); self._txt.setReadOnly(True)
+        lay.addWidget(self._txt, 1)   # stretch=1
+        lay.addWidget(_vspace(6))
 
-        ab = tk.Frame(f, bg=BG); ab.pack(fill="x", padx=24, pady=(4,12))
-        _btn(ab, "Copy All", self._ex_copy).pack(side="left")
-        _btn(ab, "Save as TXT", self._ex_save).pack(side="left", padx=8)
-        self._ex_copy_lbl = tk.StringVar()
-        tk.Label(ab, textvariable=self._ex_copy_lbl,
-                 bg=BG, fg=GREEN, font=(FONT,10)).pack(side="left")
+        copy_row = QWidget(); cl = QHBoxLayout(copy_row)
+        cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(8)
+        copy_btn = _secondary("Copy All"); copy_btn.clicked.connect(self._ex_copy)
+        save_btn = _secondary("Save as TXT"); save_btn.clicked.connect(self._ex_save)
+        self._ex_copy_lbl = QLabel("")
+        self._ex_copy_lbl.setStyleSheet(f"color: {GREEN}; font-size: 10pt;")
+        cl.addWidget(copy_btn); cl.addWidget(save_btn)
+        cl.addWidget(self._ex_copy_lbl); cl.addStretch()
+        lay.addWidget(copy_row)
 
-        self._fhits: list[tuple[str,str]] = []; self._fidx = 0
+        return page
 
     def _ex_load(self, path):
         self._ex_path = path
         try:
-            pages,sz = pdf_info(path)
-            self._ex_info.configure(
-                text=f"  {os.path.basename(path)}   ·   {pages} pages   ·   {sz}")
-            self._ex_info.pack(anchor="w", padx=24, pady=(6,0))
+            pages, sz = pdf_info(path)
+            self._ex_info.setText(
+                f"  {os.path.basename(path)}   ·   {pages} pages   ·   {sz}")
+            self._ex_info.show()
             self._ex_zone.set(os.path.basename(path), "Click to choose a different file")
             self._ex_from.set(1); self._ex_to.set(pages)
-            self._ex_status.set("")
-            self._sb(f"Loaded  {os.path.basename(path)}  ({pages} pages)")
-        except Exception as e:
-            messagebox.showerror("Error",str(e))
+            self._ex_status.setText("")
+            self._sb.showMessage(f"Loaded  {os.path.basename(path)}  ({pages} pages)")
+        except Exception as e: QMessageBox.critical(self, "Error", str(e))
 
     def _ex_pick(self):
-        p = filedialog.askopenfilename(title="Select PDF",
-            filetypes=[("PDF","*.pdf"),("All files","*.*")])
+        p, _ = QFileDialog.getOpenFileName(self, "Select PDF",
+                   filter="PDF Files (*.pdf);;All Files (*)")
         if p: self._ex_load(p)
-
-    def _ex_drop(self, e):
-        p = e.data.strip().strip("{}")
-        if p.lower().endswith(".pdf"): self._ex_load(p)
 
     def _ex_run(self):
         if not self._ex_path:
-            messagebox.showwarning("No file","Choose a PDF first."); return
+            QMessageBox.warning(self, "No file", "Choose a PDF first."); return
         try:
             total = len(PdfReader(self._ex_path).pages)
         except Exception as e:
-            messagebox.showerror("Error",str(e)); return
+            QMessageBox.critical(self, "Error", str(e)); return
 
         frm = max(1, self._ex_from.get()) - 1
         to  = min(total, self._ex_to.get())
 
-        self._ex_btn.configure(state="disabled", text="Extracting…")
-        self._ex_status.set("Working…")
-        self._set_busy(True)
-        self._txt.configure(state="normal"); self._txt.delete("1.0","end")
-        self._txt.configure(state="disabled")
-        self._find_var.set(""); self._fhits.clear(); self._find_cnt.set("")
-        self.update()
+        self._ex_btn.setDisabled(True); self._ex_btn.setText("Extracting…")
+        self._ex_status.setText("Working…")
+        self._txt.clear()
+        self._find_edit.clear(); self._fhits.clear(); self._find_cnt.setText("")
 
         path = self._ex_path
         def _stream():
             found = False
-            for pnum,text in do_extract(path,frm,to):
+            for pnum, text in do_extract(path, frm, to):
                 s = text.strip(); found = found or bool(s)
-                self.after(0,self._txt_add,f"Page {pnum}\n{'─'*44}\n{s}\n\n")
+                QTimer.singleShot(0, lambda s=s, n=pnum: self._txt_add(
+                    f"Page {n}\n{'─'*44}\n{s}\n\n"))
             if not found:
-                self.after(0,self._txt_add,"(No selectable text — PDF may be scanned/image-based)")
-            self.after(0,self._ex_done)
+                QTimer.singleShot(0, lambda: self._txt_add(
+                    "(No selectable text — PDF may be scanned/image-based)"))
+            QTimer.singleShot(0, self._ex_done)
         threading.Thread(target=_stream, daemon=True).start()
 
     def _txt_add(self, chunk):
-        self._txt.configure(state="normal")
-        self._txt.insert("end",chunk); self._txt.see("end")
-        self._txt.configure(state="disabled")
+        self._txt.moveCursor(QTextCursor.MoveOperation.End)
+        self._txt.insertPlainText(chunk)
+        self._txt.moveCursor(QTextCursor.MoveOperation.End)
 
     def _ex_done(self):
-        self._ex_btn.configure(state="normal", text="Extract Text")
-        self._ex_status.set("Done"); self._set_busy(False)
-        self._sb("Extraction complete")
-        self.after(2500, lambda: self._ex_status.set(""))
+        self._ex_btn.setDisabled(False); self._ex_btn.setText("Extract Text")
+        self._ex_status.setText("Done"); self._sb.showMessage("Extraction complete")
+        QTimer.singleShot(2500, lambda: self._ex_status.setText(""))
 
-    def _find_do(self):
-        q=self._find_var.get(); w=self._txt
-        w.tag_remove("match","1.0","end"); w.tag_remove("cur","1.0","end")
-        self._fhits.clear(); self._fidx=0
-        if not q: self._find_cnt.set(""); return
-        pos="1.0"
-        while True:
-            idx=w.search(q,pos,nocase=True,stopindex="end")
-            if not idx: break
-            end=f"{idx}+{len(q)}c"; w.tag_add("match",idx,end)
-            self._fhits.append((idx,end)); pos=end
-        n=len(self._fhits)
-        self._find_cnt.set(f"{n} match{'es' if n!=1 else ''}")
+    def _find_do(self, q=""):
+        q = self._find_edit.text()
+        fmt_clear = self._txt.document().find("")  # reset
+        cursor = self._txt.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        self._txt.setTextCursor(cursor)
+        # Reset all highlighting
+        fmt_plain = self._txt.currentCharFormat()
+        fmt_plain.setBackground(self._txt.palette().base())
+        cursor.setCharFormat(fmt_plain)
+        cursor.clearSelection(); self._txt.setTextCursor(cursor)
+
+        self._fhits.clear(); self._fidx = 0
+        if not q: self._find_cnt.setText(""); return
+
+        from PyQt6.QtGui import QTextCharFormat, QColor
+        fmt_hit = QTextCharFormat(); fmt_hit.setBackground(QColor("#E8A87C")); fmt_hit.setForeground(QColor("#111"))
+
+        doc = self._txt.document(); c = doc.find(q, 0)
+        while not c.isNull():
+            c.mergeCharFormat(fmt_hit)
+            self._fhits.append((c.selectionStart(), c.selectionEnd()))
+            c = doc.find(q, c)
+
+        n = len(self._fhits)
+        self._find_cnt.setText(f"{n} match{'es' if n!=1 else ''}")
         if n: self._find_step(0)
 
     def _find_step(self, d):
         if not self._fhits: return
-        w=self._txt; s,e=self._fhits[self._fidx]
-        w.tag_remove("cur",s,e); w.tag_add("match",s,e)
-        self._fidx=(self._fidx+d)%len(self._fhits)
-        s,e=self._fhits[self._fidx]
-        w.tag_remove("match",s,e); w.tag_add("cur",s,e); w.see(s)
-        self._find_cnt.set(f"{self._fidx+1}/{len(self._fhits)}")
+        from PyQt6.QtGui import QTextCharFormat, QColor
+        fmt_cur = QTextCharFormat(); fmt_cur.setBackground(QColor(ACCENT)); fmt_cur.setForeground(QColor("white"))
+        fmt_hit = QTextCharFormat(); fmt_hit.setBackground(QColor("#E8A87C")); fmt_hit.setForeground(QColor("#111"))
+
+        # De-highlight current
+        s, e = self._fhits[self._fidx]
+        cur = self._txt.textCursor(); cur.setPosition(s); cur.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
+        cur.mergeCharFormat(fmt_hit)
+
+        self._fidx = (self._fidx + d) % len(self._fhits)
+        s, e = self._fhits[self._fidx]
+        cur.setPosition(s); cur.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
+        cur.mergeCharFormat(fmt_cur)
+        self._txt.setTextCursor(cur); self._txt.ensureCursorVisible()
+        self._find_cnt.setText(f"{self._fidx+1}/{len(self._fhits)}")
 
     def _ex_copy(self):
-        t=self._txt.get("1.0","end").strip()
-        if not t: messagebox.showwarning("Empty","Nothing to copy yet."); return
-        self.clipboard_clear(); self.clipboard_append(t)
-        self._ex_copy_lbl.set("Copied to clipboard")
-        self.after(2000,lambda: self._ex_copy_lbl.set(""))
+        t = self._txt.toPlainText().strip()
+        if not t: QMessageBox.warning(self, "Empty", "Nothing to copy yet."); return
+        QApplication.clipboard().setText(t)
+        self._ex_copy_lbl.setText("Copied to clipboard")
+        QTimer.singleShot(2000, lambda: self._ex_copy_lbl.setText(""))
 
     def _ex_save(self):
-        t=self._txt.get("1.0","end").strip()
-        if not t: messagebox.showwarning("Empty","Nothing to save yet."); return
-        p=filedialog.asksaveasfilename(title="Save text",
-            defaultextension=".txt",filetypes=[("Text","*.txt"),("All","*.*")])
+        t = self._txt.toPlainText().strip()
+        if not t: QMessageBox.warning(self, "Empty", "Nothing to save yet."); return
+        p, _ = QFileDialog.getSaveFileName(self, "Save text",
+                   filter="Text Files (*.txt);;All Files (*)")
         if not p: return
-        with open(p,"w",encoding="utf-8") as f: f.write(t)
-        self._ex_copy_lbl.set(f"Saved  {os.path.basename(p)}")
-        self.after(2500,lambda: self._ex_copy_lbl.set(""))
+        with open(p, "w", encoding="utf-8") as f: f.write(t)
+        self._ex_copy_lbl.setText(f"Saved  {os.path.basename(p)}")
+        QTimer.singleShot(2500, lambda: self._ex_copy_lbl.setText(""))
 
-    # ═════════════════════════════════════════════════════════════════════════
+    # ──────────────────────────────────────────────────────────────────────────
     # VECTOR DB TAB
-    # ═════════════════════════════════════════════════════════════════════════
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def _vectordb_tab(self, f):
+    def _vectordb_tab(self):
         self._vdb_paths: list[str] = []
 
-        about = tk.Frame(f, bg=CARD); about.pack(fill="x", padx=20, pady=(20,0))
-        tk.Label(about, text="Build a Vector Database from PDFs",
-                 bg=CARD, fg=FG, font=(FONT,12,"bold")).pack(anchor="w", padx=16, pady=(12,2))
-        tk.Label(about,
-            text=("Splits each PDF into text chunks, generates semantic embeddings "
-                  "(all-MiniLM-L6-v2), and saves a persistent ChromaDB store "
-                  "queryable by any LLM.   First run downloads the model (~80 MB)."),
-            bg=CARD, fg=FG2, font=(FONT,10), wraplength=640, justify="left"
-            ).pack(anchor="w", padx=16, pady=(0,12))
+        page = QWidget(); lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 20, 24, 16); lay.setSpacing(0)
 
-        _div(f)
+        # ── Info card ────────────────────────────────────────────────────────
+        card = QFrame(); card.setStyleSheet(f"background: {CARD}; border-radius: 6px;")
+        cl = QVBoxLayout(card); cl.setContentsMargins(16, 12, 16, 12); cl.setSpacing(4)
+        title = QLabel("Build a Vector Database from PDFs")
+        title.setStyleSheet(f"color: {FG}; font-size: 12pt; font-weight: bold; background: transparent;")
+        desc = QLabel("Splits each PDF into text chunks, generates semantic embeddings "
+                      "(all-MiniLM-L6-v2), and saves a persistent ChromaDB store "
+                      "queryable by any LLM.   First run downloads the model (~80 MB).")
+        desc.setStyleSheet(f"color: {FG2}; font-size: 10pt; background: transparent;")
+        desc.setWordWrap(True)
+        cl.addWidget(title); cl.addWidget(desc)
+        lay.addWidget(card)
 
-        _lbl(f, "PDFS TO INDEX", secondary=True)
-        tv_f = tk.Frame(f, bg=CARD); tv_f.pack(fill="x", padx=20)
-        vcols = ("name","pages","size")
-        self._vdb_tv = ttk.Treeview(tv_f, columns=vcols, show="headings",
-                                     height=5, selectmode="browse")
-        for col,lbl,w,a in [("name","Filename",360,"w"),
-                              ("pages","Pages",74,"center"),("size","Size",90,"e")]:
-            self._vdb_tv.heading(col,text=lbl,anchor=a)
-            self._vdb_tv.column(col,width=w,anchor=a,stretch=(col=="name"))
-        vvsb = ttk.Scrollbar(tv_f, orient="vertical", command=self._vdb_tv.yview)
-        self._vdb_tv.configure(yscrollcommand=vvsb.set)
-        self._vdb_tv.pack(side="left",fill="both",expand=True)
-        vvsb.pack(side="right",fill="y")
+        # ── File list ────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("PDFS TO INDEX")); lay.addWidget(_vspace(8))
 
-        vf = tk.Frame(f, bg=BG); vf.pack(fill="x", padx=20, pady=(8,0))
-        for t,cmd in [("Add PDFs",self._vdb_add),("Remove",self._vdb_del),
-                       ("Clear",self._vdb_clear)]:
-            _btn(vf, t, cmd).pack(side="left", padx=(0,6))
+        self._vdb_tv = QTableWidget(0, 3)
+        self._vdb_tv.setHorizontalHeaderLabels(["Filename", "Pages", "Size"])
+        self._vdb_tv.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._vdb_tv.setColumnWidth(1, 74); self._vdb_tv.setColumnWidth(2, 90)
+        self._vdb_tv.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self._vdb_tv.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._vdb_tv.verticalHeader().hide()
+        self._vdb_tv.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._vdb_tv.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._vdb_tv.setFixedHeight(160)
+        lay.addWidget(self._vdb_tv)
+        lay.addWidget(_vspace(8))
 
-        _div(f)
+        vbtn_row = QWidget(); vbl = QHBoxLayout(vbtn_row)
+        vbl.setContentsMargins(0, 0, 0, 0); vbl.setSpacing(6)
+        for t, fn in [("Add PDFs", self._vdb_add), ("Remove", self._vdb_del),
+                      ("Clear", self._vdb_clear)]:
+            b = _secondary(t); b.clicked.connect(fn); vbl.addWidget(b)
+        vbl.addStretch()
+        lay.addWidget(vbtn_row)
 
-        _lbl(f, "SETTINGS", secondary=True)
-        sg = tk.Frame(f, bg=BG); sg.pack(fill="x", padx=24, pady=(0,8))
+        # ── Settings ─────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("SETTINGS")); lay.addWidget(_vspace(10))
 
-        r1 = tk.Frame(sg, bg=BG); r1.pack(fill="x")
+        settings_row = QWidget(); sl = QHBoxLayout(settings_row)
+        sl.setContentsMargins(0, 0, 0, 0); sl.setSpacing(32)
 
-        c1 = tk.Frame(r1, bg=BG); c1.pack(side="left", padx=(0,32))
-        tk.Label(c1, text="COLLECTION NAME", bg=BG, fg=FG2,
-                 font=(FONT,9,"bold")).pack(anchor="w", pady=(0,6))
-        self._vdb_coll = tk.StringVar(value="my_documents")
-        ttk.Entry(c1, textvariable=self._vdb_coll, width=22).pack(anchor="w")
+        col1 = QWidget(); c1l = QVBoxLayout(col1); c1l.setContentsMargins(0,0,0,0); c1l.setSpacing(6)
+        c1l.addWidget(_section("COLLECTION NAME"))
+        self._vdb_coll = QLineEdit("my_documents"); self._vdb_coll.setFixedWidth(200)
+        c1l.addWidget(self._vdb_coll)
 
-        c2 = tk.Frame(r1, bg=BG); c2.pack(side="left", padx=(0,32))
-        tk.Label(c2, text="CHUNK SIZE (chars)", bg=BG, fg=FG2,
-                 font=(FONT,9,"bold")).pack(anchor="w", pady=(0,6))
-        self._vdb_chunk_var = Stepper(c2, from_=100, to=4000, initial=800, step=100, width=5)
-        self._vdb_chunk_var.pack(anchor="w")
+        col2 = QWidget(); c2l = QVBoxLayout(col2); c2l.setContentsMargins(0,0,0,0); c2l.setSpacing(6)
+        c2l.addWidget(_section("CHUNK SIZE (chars)"))
+        self._vdb_chunk = Stepper(from_=100, to=4000, initial=800, step=100)
+        c2l.addWidget(self._vdb_chunk)
 
-        c3 = tk.Frame(r1, bg=BG); c3.pack(side="left")
-        tk.Label(c3, text="OVERLAP (chars)", bg=BG, fg=FG2,
-                 font=(FONT,9,"bold")).pack(anchor="w", pady=(0,6))
-        self._vdb_overlap_var = Stepper(c3, from_=0, to=500, initial=100, step=25, width=5)
-        self._vdb_overlap_var.pack(anchor="w")
+        col3 = QWidget(); c3l = QVBoxLayout(col3); c3l.setContentsMargins(0,0,0,0); c3l.setSpacing(6)
+        c3l.addWidget(_section("OVERLAP (chars)"))
+        self._vdb_overlap = Stepper(from_=0, to=500, initial=100, step=25)
+        c3l.addWidget(self._vdb_overlap)
 
-        r2 = tk.Frame(sg, bg=BG); r2.pack(fill="x", pady=(18,0))
-        tk.Label(r2, text="OUTPUT FOLDER", bg=BG, fg=FG2,
-                 font=(FONT,9,"bold")).pack(anchor="w", pady=(0,6))
-        ofr = tk.Frame(r2, bg=BG); ofr.pack(fill="x")
-        self._vdb_outdir = tk.StringVar()
-        ttk.Entry(ofr, textvariable=self._vdb_outdir,
-                  state="readonly").pack(side="left", fill="x", expand=True)
-        _btn(ofr, "Browse", self._vdb_browse).pack(side="left", padx=(8,0))
+        sl.addWidget(col1); sl.addWidget(col2); sl.addWidget(col3); sl.addStretch()
+        lay.addWidget(settings_row)
+        lay.addWidget(_vspace(14))
 
-        _div(f)
+        lay.addWidget(_section("OUTPUT FOLDER")); lay.addWidget(_vspace(8))
+        of_row = QWidget(); of_l = QHBoxLayout(of_row)
+        of_l.setContentsMargins(0, 0, 0, 0); of_l.setSpacing(8)
+        self._vdb_outdir = QLineEdit(); self._vdb_outdir.setReadOnly(True)
+        self._vdb_outdir.setPlaceholderText("Choose folder for ChromaDB store…")
+        vbrowse = _secondary("Browse"); vbrowse.clicked.connect(self._vdb_browse)
+        of_l.addWidget(self._vdb_outdir, 1); of_l.addWidget(vbrowse)
+        lay.addWidget(of_row)
 
-        af = tk.Frame(f, bg=BG); af.pack(pady=(2,0))
-        self._vdb_btn = _btn(af, "Build Vector DB", self._vdb_run, primary=True)
-        self._vdb_btn.pack()
-        self._vdb_prog = ProgBar(f); self._vdb_prog.pack(fill="x")
+        # ── Action ───────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addStretch()
+        self._vdb_btn = _primary("Build Vector DB"); self._vdb_btn.clicked.connect(self._vdb_run)
+        lay.addWidget(self._vdb_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(_vspace(4))
+        self._vdb_prog = ProgBar(); lay.addWidget(self._vdb_prog)
 
-        self._snip_frame = tk.Frame(f, bg=BG)
-        tk.Label(self._snip_frame, text="USAGE SNIPPET",
-                 bg=BG, fg=FG2, font=(FONT,9,"bold")).pack(anchor="w", padx=24, pady=(6,4))
-        self._snip_txt = tk.Text(self._snip_frame,
-            bg=CARD, fg=FG, font=("Menlo",9), height=10,
-            relief="flat", bd=0, padx=14, pady=10, state="disabled")
-        self._snip_txt.pack(fill="x", padx=20, pady=(0,14))
+        # ── Snippet (shown after build) ───────────────────────────────────
+        self._snip_block = QWidget(); snl = QVBoxLayout(self._snip_block)
+        snl.setContentsMargins(0, 8, 0, 0); snl.setSpacing(8)
+        snl.addWidget(_section("USAGE SNIPPET"))
+        self._snip_txt = QTextEdit(); self._snip_txt.setReadOnly(True)
+        self._snip_txt.setFixedHeight(200)
+        snl.addWidget(self._snip_txt)
+        self._snip_block.hide()
+        lay.addWidget(self._snip_block)
+
+        return page
 
     def _vdb_add(self):
-        paths = filedialog.askopenfilenames(title="Add PDFs to index",
-            filetypes=[("PDF","*.pdf"),("All files","*.*")])
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add PDFs to index",
+                       filter="PDF Files (*.pdf);;All Files (*)")
         if not paths: return
-        if not self._vdb_outdir.get():
-            self._vdb_outdir.set(os.path.join(os.path.dirname(paths[0]),"chroma_db"))
+        if not self._vdb_outdir.text():
+            self._vdb_outdir.setText(os.path.join(os.path.dirname(paths[0]), "chroma_db"))
+
         def _load():
             items = []
             for p in paths:
-                try: items.append((p,os.path.basename(p),*pdf_info(p)))
+                try: items.append((p, os.path.basename(p), *pdf_info(p)))
                 except Exception: pass
-            self.after(0,self._vdb_insert,items)
-        threading.Thread(target=_load,daemon=True).start()
+            QTimer.singleShot(0, lambda: self._vdb_insert(items))
+        threading.Thread(target=_load, daemon=True).start()
 
     def _vdb_insert(self, items):
-        for path,name,pages,size in items:
+        for path, name, pages, size in items:
             if path not in self._vdb_paths:
                 self._vdb_paths.append(path)
-                self._vdb_tv.insert("","end",values=(name,pages,size))
+                r = self._vdb_tv.rowCount(); self._vdb_tv.insertRow(r)
+                for c, v in enumerate([name, str(pages), size]):
+                    item = QTableWidgetItem(v)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter if c != 0
+                                          else Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+                    self._vdb_tv.setItem(r, c, item)
 
     def _vdb_del(self):
-        sel=self._vdb_tv.selection()
-        if not sel: return
-        idx=self._vdb_tv.index(sel[0])
-        self._vdb_tv.delete(sel[0]); self._vdb_paths.pop(idx)
+        rows = sorted({i.row() for i in self._vdb_tv.selectedItems()}, reverse=True)
+        for r in rows:
+            self._vdb_tv.removeRow(r); self._vdb_paths.pop(r)
 
     def _vdb_clear(self):
-        self._vdb_tv.delete(*self._vdb_tv.get_children())
-        self._vdb_paths.clear(); self._vdb_prog.reset()
+        self._vdb_tv.setRowCount(0); self._vdb_paths.clear(); self._vdb_prog.reset()
 
     def _vdb_browse(self):
-        d=filedialog.askdirectory(title="Vector DB output folder")
-        if d: self._vdb_outdir.set(d)
+        d = QFileDialog.getExistingDirectory(self, "Vector DB output folder")
+        if d: self._vdb_outdir.setText(d)
 
     def _vdb_run(self):
         if not self._vdb_paths:
-            messagebox.showwarning("No files","Add at least one PDF."); return
-        outdir=self._vdb_outdir.get()
+            QMessageBox.warning(self, "No files", "Add at least one PDF."); return
+        outdir = self._vdb_outdir.text()
         if not outdir:
-            messagebox.showwarning("No folder","Choose where to save the DB."); return
+            QMessageBox.warning(self, "No folder", "Choose where to save the DB."); return
 
-        self._vdb_btn.configure(state="disabled", text="Building…")
+        self._vdb_btn.setDisabled(True); self._vdb_btn.setText("Building…")
         self._vdb_prog.working("Initializing…")
-        self._set_busy(True); self.update()
 
-        paths=list(self._vdb_paths); coll=self._vdb_coll.get().strip() or "my_documents"
-        csz=self._vdb_chunk_var.get(); ov=self._vdb_overlap_var.get()
+        paths = list(self._vdb_paths)
+        coll = self._vdb_coll.text().strip() or "my_documents"
+        csz = self._vdb_chunk.get(); ov = self._vdb_overlap.get()
 
-        def _cb(fi,ft,fname,pi,pt):
-            detail=f"File {fi+1}/{ft}  —  {fname}  page {pi}/{pt}"
-            self.after(0,self._vdb_prog.step,fi*pt+pi,max(ft*pt,1),detail)
+        def _cb(fi, ft, fname, pi, pt):
+            detail = f"File {fi+1}/{ft}  —  {fname}  page {pi}/{pt}"
+            QTimer.singleShot(0, lambda d=detail, fi=fi, ft=ft, pi=pi, pt=pt:
+                self._vdb_prog.step(fi*pt+pi, max(ft*pt, 1), d))
 
         def _ok(res):
-            n_chunks,coll_name=res
-            snippet=textwrap.dedent(f"""\
+            n_chunks, coll_name = res
+            snippet = textwrap.dedent(f"""\
                 import chromadb
 
                 # Connect to the vector store
@@ -1014,32 +1574,553 @@ class App(_Base):
                 context = "\\n\\n".join(chunks)
                 prompt  = f"Answer based on this context:\\n{{context}}\\n\\nQuestion: ..."
             """)
-            def _():
-                self._vdb_prog.done(f"{n_chunks} chunks indexed and saved", outdir)
-                self._vdb_btn.configure(state="normal", text="Build Vector DB")
-                self._set_busy(False)
-                self._sb(f"Vector DB ready — {n_chunks} chunks in '{coll_name}'")
-                self._show_snippet(snippet)
-            self.after(0,_)
+            self._vdb_prog.done(f"{n_chunks} chunks indexed and saved", outdir)
+            self._vdb_btn.setDisabled(False); self._vdb_btn.setText("Build Vector DB")
+            self._sb.showMessage(f"Vector DB ready — {n_chunks} chunks in '{coll_name}'")
+            self._snip_txt.setPlainText(snippet)
+            self._snip_block.show()
 
         def _err(e):
-            def _():
-                self._vdb_prog.error(str(e))
-                self._vdb_btn.configure(state="normal", text="Build Vector DB")
-                self._set_busy(False); messagebox.showerror("Failed",str(e))
-            self.after(0,_)
+            self._vdb_prog.error(str(e))
+            self._vdb_btn.setDisabled(False); self._vdb_btn.setText("Build Vector DB")
+            QMessageBox.critical(self, "Failed", str(e))
 
-        self._run_bg(lambda: do_vectordb(paths,outdir,coll,csz,ov,_cb),_ok,_err)
+        self._run_bg(
+            lambda: do_vectordb(paths, outdir, coll, csz, ov, _cb),
+            _ok, _err)
 
-    def _show_snippet(self, code):
-        self._snip_frame.pack(fill="x")
-        self._snip_txt.configure(state="normal")
-        self._snip_txt.delete("1.0","end")
-        self._snip_txt.insert("end", code)
-        self._snip_txt.configure(state="disabled")
+    # ──────────────────────────────────────────────────────────────────────────
+    # REARRANGE TAB
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _rearrange_tab(self):
+        self._ra_path = ""
+        page = QWidget(); lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 20, 24, 16); lay.setSpacing(0)
+
+        self._ra_zone = DropZone("Choose a PDF to rearrange",
+                                 "drag & drop  ·  or click to browse")
+        self._ra_zone.clicked.connect(self._ra_pick)
+        self._ra_zone.file_dropped.connect(self._ra_load)
+        lay.addWidget(self._ra_zone)
+
+        self._ra_info = QLabel(""); self._ra_info.setProperty("cls", "info")
+        self._ra_info.style().unpolish(self._ra_info); self._ra_info.style().polish(self._ra_info)
+        self._ra_info.hide(); lay.addWidget(self._ra_info); lay.addWidget(_vspace(8))
+
+        lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("PAGE ORDER  —  drag rows to reorder  ·  select and delete to remove"))
+        lay.addWidget(_vspace(8))
+
+        self._ra_list = QListWidget()
+        self._ra_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._ra_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._ra_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._ra_list.setAlternatingRowColors(False)
+        self._ra_list.setStyleSheet(f"""
+            QListWidget {{ background:{CARD}; border:none; border-radius:4px;
+                           color:{FG}; font-size:11pt; outline:none; }}
+            QListWidget::item {{ padding:7px 14px; }}
+            QListWidget::item:selected {{ background:{ACCENT}; color:white; }}
+            QListWidget::item:hover:!selected {{ background:{CARD2}; }}
+        """)
+        lay.addWidget(self._ra_list, 1)
+        lay.addWidget(_vspace(8))
+
+        btn_row = QWidget(); bl = QHBoxLayout(btn_row)
+        bl.setContentsMargins(0,0,0,0); bl.setSpacing(6)
+        for t, fn in [("Move Up",   self._ra_up),   ("Move Down", self._ra_dn),
+                      ("Delete Page", self._ra_del), ("Reverse All", self._ra_rev),
+                      ("Reset",       self._ra_reset)]:
+            b = _secondary(t); b.clicked.connect(fn); bl.addWidget(b)
+        bl.addStretch()
+        lay.addWidget(btn_row)
+
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("OUTPUT FOLDER")); lay.addWidget(_vspace(8))
+        of = QWidget(); ol = QHBoxLayout(of); ol.setContentsMargins(0,0,0,0); ol.setSpacing(8)
+        self._ra_outdir = QLineEdit(); self._ra_outdir.setReadOnly(True)
+        self._ra_outdir.setPlaceholderText("Choose output folder…")
+        br2 = _secondary("Browse"); br2.clicked.connect(self._ra_browse)
+        ol.addWidget(self._ra_outdir, 1); ol.addWidget(br2)
+        lay.addWidget(of)
+
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addStretch()
+        self._ra_btn = _primary("Save Rearranged PDF"); self._ra_btn.clicked.connect(self._ra_run)
+        lay.addWidget(self._ra_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(_vspace(4))
+        self._ra_prog = ProgBar(); lay.addWidget(self._ra_prog)
+        return page
+
+    def _ra_pick(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Select PDF",
+                   filter="PDF Files (*.pdf);;All Files (*)")
+        if p: self._ra_load(p)
+
+    def _ra_load(self, path):
+        self._ra_path = path
+        try:
+            pages, sz = pdf_info(path)
+            self._ra_info.setText(f"  {os.path.basename(path)}   ·   {pages} pages   ·   {sz}")
+            self._ra_info.show()
+            self._ra_zone.set(os.path.basename(path), "Click to choose a different file")
+            self._ra_list.clear()
+            for i in range(pages):
+                self._ra_list.addItem(f"  Page {i+1}")
+            if not self._ra_outdir.text():
+                self._ra_outdir.setText(os.path.dirname(path))
+            self._ra_prog.reset()
+            self._sb.showMessage(f"Loaded  {os.path.basename(path)}  ({pages} pages)")
+        except Exception as e: QMessageBox.critical(self, "Error", str(e))
+
+    def _ra_up(self):
+        r = self._ra_list.currentRow()
+        if r <= 0: return
+        item = self._ra_list.takeItem(r)
+        self._ra_list.insertItem(r-1, item); self._ra_list.setCurrentRow(r-1)
+
+    def _ra_dn(self):
+        r = self._ra_list.currentRow()
+        if r < 0 or r >= self._ra_list.count()-1: return
+        item = self._ra_list.takeItem(r)
+        self._ra_list.insertItem(r+1, item); self._ra_list.setCurrentRow(r+1)
+
+    def _ra_del(self):
+        r = self._ra_list.currentRow()
+        if r >= 0: self._ra_list.takeItem(r)
+
+    def _ra_rev(self):
+        items = [self._ra_list.item(i).text() for i in range(self._ra_list.count())]
+        self._ra_list.clear()
+        for t in reversed(items): self._ra_list.addItem(t)
+
+    def _ra_reset(self):
+        if not self._ra_path: return
+        self._ra_list.clear()
+        try:
+            pages = len(PdfReader(self._ra_path).pages)
+            for i in range(pages): self._ra_list.addItem(f"  Page {i+1}")
+        except Exception: pass
+
+    def _ra_browse(self):
+        d = QFileDialog.getExistingDirectory(self, "Output folder")
+        if d: self._ra_outdir.setText(d)
+
+    def _ra_run(self):
+        if not self._ra_path:
+            QMessageBox.warning(self, "No file", "Choose a PDF first."); return
+        if not self._ra_outdir.text():
+            QMessageBox.warning(self, "No folder", "Choose output folder."); return
+        if self._ra_list.count() == 0:
+            QMessageBox.warning(self, "Empty", "No pages in list."); return
+
+        # Build 0-based order from list labels ("  Page N")
+        total = len(PdfReader(self._ra_path).pages)
+        order = []
+        for i in range(self._ra_list.count()):
+            txt = self._ra_list.item(i).text().strip()
+            try:
+                n = int(txt.split()[-1]) - 1
+                if 0 <= n < total: order.append(n)
+            except ValueError: pass
+        if not order:
+            QMessageBox.warning(self, "Bad order", "Could not parse page list."); return
+
+        self._ra_btn.setDisabled(True); self._ra_btn.setText("Saving…")
+        self._ra_prog.working("Writing pages…")
+        path = self._ra_path; outdir = self._ra_outdir.text()
+
+        def _ok(out):
+            self._ra_prog.done(f"Saved  {os.path.basename(out)}", out)
+            self._ra_btn.setDisabled(False); self._ra_btn.setText("Save Rearranged PDF")
+            self._sb.showMessage(f"Rearranged → {os.path.basename(out)}")
+        def _err(e):
+            self._ra_prog.error(str(e))
+            self._ra_btn.setDisabled(False); self._ra_btn.setText("Save Rearranged PDF")
+            QMessageBox.critical(self, "Error", str(e))
+
+        self._run_bg(lambda: do_rearrange(path, outdir, order), _ok, _err)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # COMPRESS TAB
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _compress_tab(self):
+        self._co_path = ""
+        page = QWidget(); lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 20, 24, 16); lay.setSpacing(0)
+
+        self._co_zone = DropZone("Choose a PDF to compress",
+                                 "drag & drop  ·  or click to browse")
+        self._co_zone.clicked.connect(self._co_pick)
+        self._co_zone.file_dropped.connect(self._co_load)
+        lay.addWidget(self._co_zone)
+
+        self._co_info = QLabel(""); self._co_info.setProperty("cls", "info")
+        self._co_info.style().unpolish(self._co_info); self._co_info.style().polish(self._co_info)
+        self._co_info.hide(); lay.addWidget(self._co_info); lay.addWidget(_vspace(8))
+
+        lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("COMPRESSION LEVEL")); lay.addWidget(_vspace(10))
+
+        levels = [
+            ("Screen (smallest)", "72 dpi images — best for screen / email"),
+            ("eBook",             "150 dpi images — good balance (recommended)"),
+            ("Print",             "300 dpi images — suitable for printing"),
+            ("Prepress (largest)","300+ dpi, colour-managed — prepress quality"),
+        ]
+        self._co_grp = QButtonGroup(self)
+        for i, (name, desc) in enumerate(levels):
+            row = QWidget(); rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(10)
+            rb = QRadioButton(name); rb.setProperty("_val", name)
+            if i == 1: rb.setChecked(True)
+            self._co_grp.addButton(rb)
+            desc_lbl = QLabel(desc)
+            desc_lbl.setStyleSheet(f"color:{FG2}; font-size:9pt;")
+            rl.addWidget(rb); rl.addWidget(desc_lbl); rl.addStretch()
+            lay.addWidget(row)
+
+        note = QLabel("ℹ  Best results with Ghostscript installed (brew install ghostscript). "
+                      "Without it, basic pypdf stream compression is used.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{FG2}; font-size:9pt; padding-top:8px;")
+        lay.addWidget(note)
+
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addWidget(_section("OUTPUT FILE")); lay.addWidget(_vspace(8))
+        of = QWidget(); ol = QHBoxLayout(of); ol.setContentsMargins(0,0,0,0); ol.setSpacing(8)
+        self._co_out = QLineEdit(); self._co_out.setReadOnly(True)
+        self._co_out.setPlaceholderText("Choose save location…")
+        br2 = _secondary("Browse"); br2.clicked.connect(self._co_browse)
+        ol.addWidget(self._co_out, 1); ol.addWidget(br2)
+        lay.addWidget(of)
+
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
+        lay.addStretch()
+        self._co_btn = _primary("Compress PDF"); self._co_btn.clicked.connect(self._co_run)
+        lay.addWidget(self._co_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(_vspace(4))
+        self._co_prog = ProgBar(); lay.addWidget(self._co_prog)
+        return page
+
+    def _co_pick(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Select PDF",
+                   filter="PDF Files (*.pdf);;All Files (*)")
+        if p: self._co_load(p)
+
+    def _co_load(self, path):
+        self._co_path = path
+        try:
+            pages, sz = pdf_info(path)
+            self._co_info.setText(f"  {os.path.basename(path)}   ·   {pages} pages   ·   {sz}")
+            self._co_info.show()
+            self._co_zone.set(os.path.basename(path), "Click to choose a different file")
+            base = os.path.splitext(path)[0]
+            self._co_out.setText(base + "_compressed.pdf")
+            self._co_prog.reset()
+            self._sb.showMessage(f"Loaded  {os.path.basename(path)}  —  {sz}")
+        except Exception as e: QMessageBox.critical(self, "Error", str(e))
+
+    def _co_browse(self):
+        p, _ = QFileDialog.getSaveFileName(self, "Save compressed PDF as",
+                   filter="PDF Files (*.pdf)")
+        if p: self._co_out.setText(p if p.endswith(".pdf") else p+".pdf")
+
+    def _co_run(self):
+        if not self._co_path:
+            QMessageBox.warning(self, "No file", "Choose a PDF first."); return
+        out = self._co_out.text()
+        if not out:
+            QMessageBox.warning(self, "No output", "Choose where to save."); return
+        checked = self._co_grp.checkedButton()
+        level = checked.property("_val") if checked else "eBook"
+
+        orig_size = os.path.getsize(self._co_path)
+        self._co_btn.setDisabled(True); self._co_btn.setText("Compressing…")
+        self._co_prog.working("Compressing…")
+
+        src = self._co_path
+
+        def _ok(res):
+            out_path, method = res
+            new_size = os.path.getsize(out_path)
+            ratio = (1 - new_size/orig_size)*100 if orig_size else 0
+            orig_fmt = fmt_size(src); new_fmt = fmt_size(out_path)
+            self._co_prog.done(
+                f"{orig_fmt}  →  {new_fmt}   ({ratio:.1f}% smaller)   via {method}",
+                out_path)
+            self._co_btn.setDisabled(False); self._co_btn.setText("Compress PDF")
+            self._sb.showMessage(f"Compressed → {os.path.basename(out_path)}")
+        def _err(e):
+            self._co_prog.error(str(e))
+            self._co_btn.setDisabled(False); self._co_btn.setText("Compress PDF")
+            QMessageBox.critical(self, "Compression failed", str(e))
+
+        self._run_bg(
+            lambda: do_compress(src, out, level, lambda t: None),
+            _ok, _err)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # SCAN TO PDF TAB  (Microsoft Lens-style)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _scan_tab(self):
+        # Track the currently-edited page by item reference (stable across reorders).
+        self._sc_cur_item: QListWidgetItem | None = None
+
+        page = QWidget(); lay = QVBoxLayout(page)
+        lay.setContentsMargins(24, 16, 24, 12); lay.setSpacing(0)
+
+        # ── Info line ─────────────────────────────────────────────────────────
+        self._sc_info_lbl = QLabel(
+            "Add document photos, drag the orange corners on each, "
+            "then convert into a multi-page PDF.")
+        self._sc_info_lbl.setStyleSheet(f"color:{FG2}; font-size:10pt;")
+        self._sc_info_lbl.setWordWrap(True)
+        lay.addWidget(self._sc_info_lbl); lay.addWidget(_vspace(8))
+
+        # ── Crop area (the active page) ───────────────────────────────────────
+        self._sc_crop = ImageCropWidget()
+        self._sc_crop.image_loaded.connect(lambda p: self._sc_add_paths([p]))
+        lay.addWidget(self._sc_crop, 1)
+        lay.addWidget(_vspace(8))
+
+        # ── Page strip with thumbnails + Add button ───────────────────────────
+        strip_row = QWidget(); srl = QHBoxLayout(strip_row)
+        srl.setContentsMargins(0, 0, 0, 0); srl.setSpacing(8)
+
+        self._sc_strip = QListWidget()
+        self._sc_strip.setViewMode(QListWidget.ViewMode.IconMode)
+        self._sc_strip.setFlow(QListWidget.Flow.LeftToRight)
+        self._sc_strip.setWrapping(False)
+        self._sc_strip.setMovement(QListWidget.Movement.Snap)
+        self._sc_strip.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._sc_strip.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._sc_strip.setIconSize(QSize(70, 90))
+        self._sc_strip.setGridSize(QSize(86, 128))
+        self._sc_strip.setFixedHeight(140)
+        self._sc_strip.setSpacing(2)
+        self._sc_strip.setUniformItemSizes(True)
+        self._sc_strip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._sc_strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sc_strip.setStyleSheet(f"""
+            QListWidget {{ background:{CARD}; border:none; border-radius:4px;
+                           color:{FG}; font-size:9pt; outline:none; padding:6px; }}
+            QListWidget::item {{ padding:4px; border-radius:4px; }}
+            QListWidget::item:selected {{ background:{ACCENT}; color:white; }}
+        """)
+        self._sc_strip.itemSelectionChanged.connect(self._sc_select_changed)
+        # Re-number after drag-reorder:
+        self._sc_strip.model().rowsMoved.connect(lambda *a: self._sc_renumber())
+
+        add_btn = QPushButton("＋\nAdd")
+        add_btn.setFixedSize(80, 128)
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.setStyleSheet(f"""
+            QPushButton {{ background:{CARD}; color:{FG2}; font-size:13pt;
+                           border:1px dashed {BORDER}; border-radius:4px; }}
+            QPushButton:hover {{ color:{FG}; border-color:{ACCENT}; }}
+        """)
+        add_btn.clicked.connect(self._sc_pick_files)
+
+        srl.addWidget(self._sc_strip, 1); srl.addWidget(add_btn)
+        lay.addWidget(strip_row)
+
+        # ── Controls row ──────────────────────────────────────────────────────
+        lay.addWidget(_vspace(10))
+        ctrl = QWidget(); cl = QHBoxLayout(ctrl)
+        cl.setContentsMargins(0, 0, 0, 0); cl.setSpacing(12)
+
+        reset_btn = _secondary("Reset Corners")
+        reset_btn.clicked.connect(self._sc_crop.reset_corners)
+        del_btn = _secondary("Delete Page")
+        del_btn.clicked.connect(self._sc_delete_page)
+        cl.addWidget(reset_btn); cl.addWidget(del_btn); cl.addSpacing(20)
+
+        cl.addWidget(QLabel("Output size:"))
+        self._sc_size = QComboBox()
+        self._sc_size.addItems(["Auto (from selection)", "A4 (210×297 mm)", "Letter (8.5×11 in)"])
+        self._sc_size.setStyleSheet(f"""
+            QComboBox {{ background:{CARD2}; color:{FG}; border:none; padding:6px 10px;
+                         border-radius:4px; font-size:10pt; min-width:180px; }}
+            QComboBox::drop-down {{ border:none; width:24px; }}
+            QComboBox QAbstractItemView {{ background:{CARD2}; color:{FG};
+                                           selection-background-color:{ACCENT}; border:none; }}
+        """)
+        cl.addWidget(self._sc_size)
+
+        self._sc_gray = QCheckBox("Grayscale")
+        self._sc_gray.setStyleSheet(f"""
+            QCheckBox {{ color:{FG}; spacing:6px; font-size:10pt; }}
+            QCheckBox::indicator {{ width:16px; height:16px; border-radius:3px;
+                                    border:2px solid {BORDER}; background:{CARD}; }}
+            QCheckBox::indicator:checked {{ background:{ACCENT}; border-color:{ACCENT}; }}
+        """)
+        cl.addWidget(self._sc_gray); cl.addStretch()
+        lay.addWidget(ctrl)
+
+        # ── Save path ─────────────────────────────────────────────────────────
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(10))
+        lay.addWidget(_section("SAVE AS")); lay.addWidget(_vspace(6))
+        of = QWidget(); ol = QHBoxLayout(of); ol.setContentsMargins(0,0,0,0); ol.setSpacing(8)
+        self._sc_out = QLineEdit(); self._sc_out.setReadOnly(True)
+        self._sc_out.setPlaceholderText("Choose save location…")
+        br2 = _secondary("Browse"); br2.clicked.connect(self._sc_browse)
+        ol.addWidget(self._sc_out, 1); ol.addWidget(br2)
+        lay.addWidget(of)
+
+        lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(10))
+        self._sc_btn = _primary("Convert to PDF"); self._sc_btn.clicked.connect(self._sc_run)
+        lay.addWidget(self._sc_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        lay.addWidget(_vspace(4))
+        self._sc_prog = ProgBar(); lay.addWidget(self._sc_prog)
+
+        if not _CV2:
+            warn = QLabel("⚠  opencv-python not installed — run:  pip install opencv-python")
+            warn.setStyleSheet(f"color:{RED}; font-size:10pt; padding:4px 0;")
+            lay.addWidget(warn)
+
+        return page
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+    def _sc_pick_files(self):
+        exts = "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.tif *.webp);;All Files (*)"
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add images", filter=exts)
+        if paths: self._sc_add_paths(paths)
+
+    def _sc_add_paths(self, paths):
+        """Append new image pages to the strip (with thumbnails)."""
+        for path in paths:
+            pix = QPixmap(path)
+            if pix.isNull(): continue
+            thumb = pix.scaled(70, 90, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            item = QListWidgetItem(QIcon(thumb), "")
+            item.setData(Qt.ItemDataRole.UserRole, {"path": path, "corners": None})
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._sc_strip.addItem(item)
+
+        self._sc_renumber()
+
+        # Auto-select first page so editor isn't blank
+        if self._sc_strip.count() and self._sc_cur_item is None:
+            self._sc_strip.setCurrentRow(0)
+
+        # Default save path = first image's folder + name
+        if not self._sc_out.text() and paths:
+            base = os.path.splitext(paths[0])[0]
+            self._sc_out.setText(base + "_scan.pdf")
+
+    def _sc_renumber(self):
+        for i in range(self._sc_strip.count()):
+            self._sc_strip.item(i).setText(f"Page {i+1}")
+
+    def _sc_save_current_corners(self):
+        """Persist the crop widget's corners back onto the currently-edited item."""
+        if self._sc_cur_item is None: return
+        corners = self._sc_crop.image_corners_px()
+        if not corners or len(corners) != 4: return
+        data = self._sc_cur_item.data(Qt.ItemDataRole.UserRole) or {}
+        data["corners"] = corners
+        self._sc_cur_item.setData(Qt.ItemDataRole.UserRole, data)
+
+    def _sc_select_changed(self):
+        new_item = self._sc_strip.currentItem()
+        if new_item is self._sc_cur_item: return
+
+        # Save previous item's corners before switching
+        self._sc_save_current_corners()
+
+        if new_item is not None:
+            data = new_item.data(Qt.ItemDataRole.UserRole) or {}
+            self._sc_crop.load(data["path"])
+            if data.get("corners"):
+                self._sc_crop.set_image_corners_px(data["corners"])
+        else:
+            self._sc_crop.clear()
+
+        self._sc_cur_item = new_item
+
+    def _sc_delete_page(self):
+        item = self._sc_strip.currentItem()
+        if item is None: return
+        row = self._sc_strip.row(item)
+        was_current = (item is self._sc_cur_item)
+        self._sc_strip.takeItem(row)
+        self._sc_renumber()
+        if was_current: self._sc_cur_item = None
+        cnt = self._sc_strip.count()
+        if cnt:
+            self._sc_strip.setCurrentRow(min(row, cnt-1))
+        else:
+            self._sc_crop.clear(); self._sc_cur_item = None
+
+    def _sc_browse(self):
+        p, _ = QFileDialog.getSaveFileName(self, "Save PDF as",
+                   filter="PDF Files (*.pdf)")
+        if p: self._sc_out.setText(p if p.endswith(".pdf") else p+".pdf")
+
+    def _sc_run(self):
+        if self._sc_strip.count() == 0:
+            QMessageBox.warning(self, "No images",
+                "Click + Add to load at least one image."); return
+
+        # Save the current page's corners before collecting all
+        self._sc_save_current_corners()
+
+        # Collect every page in display order
+        pages = []
+        for i in range(self._sc_strip.count()):
+            data = self._sc_strip.item(i).data(Qt.ItemDataRole.UserRole) or {}
+            corners = data.get("corners")
+            if not corners or len(corners) != 4:
+                QMessageBox.warning(self, "Missing corners",
+                    f"Page {i+1} doesn't have all 4 corners placed."); return
+            pages.append((data["path"], corners))
+
+        out = self._sc_out.text()
+        if not out:
+            QMessageBox.warning(self, "No output", "Choose where to save."); return
+
+        size_txt = self._sc_size.currentText()
+        out_size = "A4" if "A4" in size_txt else "Letter" if "Letter" in size_txt else "Auto"
+        grayscale = self._sc_gray.isChecked()
+
+        self._sc_btn.setDisabled(True); self._sc_btn.setText("Converting…")
+        self._sc_prog.working(f"Processing {len(pages)} page{'s' if len(pages)>1 else ''}…")
+
+        def _cb(done, total, name):
+            self._post(self._sc_prog.step, done, total, f"Page {done}/{total}  —  {name}")
+
+        def _ok(res):
+            out_path, n = res
+            self._sc_prog.done(
+                f"Saved  {os.path.basename(out_path)}  ({n} page{'s' if n>1 else ''})",
+                out_path)
+            self._sc_btn.setDisabled(False); self._sc_btn.setText("Convert to PDF")
+            self._sb.showMessage(f"Scan saved → {os.path.basename(out_path)}")
+        def _err(e):
+            self._sc_prog.error(str(e))
+            self._sc_btn.setDisabled(False); self._sc_btn.setText("Convert to PDF")
+            QMessageBox.critical(self, "Conversion failed", str(e))
+
+        self._run_bg(
+            lambda: do_scan_pages_to_pdf(pages, out, out_size, grayscale, _cb),
+            _ok, _err)
 
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("PDF Tool")
+    app.setStyleSheet(QSS)
+    win = App()
+    win.show()
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
-    App().mainloop()
+    main()

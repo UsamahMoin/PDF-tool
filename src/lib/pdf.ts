@@ -117,6 +117,80 @@ export async function mergePdfs(
   return { bytes, totalPages }
 }
 
+export interface CompressOptions {
+  dpi: number
+  quality: number
+  maxPixels?: number
+}
+
+export async function compressPdf(
+  file: File,
+  options: CompressOptions,
+  onProgress?: (done: number, total: number, label: string) => void,
+): Promise<Uint8Array> {
+  const original = new Uint8Array(await file.arrayBuffer())
+  const loadingTask = pdfjsLib.getDocument({ data: original.slice() })
+  const source = await loadingTask.promise
+  const output = await PDFDocument.create()
+  const maxPixels = options.maxPixels ?? 16_000_000
+
+  try {
+    for (let pageNumber = 1; pageNumber <= source.numPages; pageNumber++) {
+      const sourcePage = await source.getPage(pageNumber)
+      const baseViewport = sourcePage.getViewport({ scale: 1 })
+      let scale = Math.max(0.1, options.dpi / 72)
+      let renderViewport = sourcePage.getViewport({ scale })
+      const requestedPixels = renderViewport.width * renderViewport.height
+
+      if (requestedPixels > maxPixels) {
+        scale *= Math.sqrt(maxPixels / requestedPixels)
+        renderViewport = sourcePage.getViewport({ scale })
+      }
+
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(renderViewport.width))
+      canvas.height = Math.max(1, Math.round(renderViewport.height))
+      const context = canvas.getContext('2d', { alpha: false })
+      if (!context) throw new Error('Canvas rendering is unavailable in this browser.')
+
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      await sourcePage.render({
+        canvasContext: context,
+        viewport: renderViewport,
+        background: '#ffffff',
+      }).promise
+
+      const jpeg = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          blob => blob ? resolve(blob) : reject(new Error(`Failed to encode page ${pageNumber}.`)),
+          'image/jpeg',
+          options.quality,
+        )
+      })
+      const image = await output.embedJpg(await jpeg.arrayBuffer())
+      const outputPage = output.addPage([baseViewport.width, baseViewport.height])
+      outputPage.drawImage(image, {
+        x: 0,
+        y: 0,
+        width: baseViewport.width,
+        height: baseViewport.height,
+      })
+
+      sourcePage.cleanup()
+      canvas.width = 1
+      canvas.height = 1
+      onProgress?.(pageNumber, source.numPages, `Compressed page ${pageNumber}/${source.numPages}`)
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+
+    const compressed = await output.save({ useObjectStreams: true })
+    return compressed.byteLength < original.byteLength ? compressed : original
+  } finally {
+    await source.destroy()
+  }
+}
+
 export async function* extractText(
   file: File,
   startPage: number,
