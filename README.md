@@ -58,14 +58,15 @@ The iOS and Android shells use:
 
 ## Desktop (Python)
 
-The original Tkinter app lives at `pdf_tool.py` and supports the same Split / Merge / Extract operations.
+The PyQt6 desktop app lives at `pdf_tool.py`.
 
 ```bash
-pip install pypdf tkinterdnd2
+pip install pypdf PyQt6 Pillow
 python pdf_tool.py
 ```
 
-`tkinterdnd2` is optional — without it, drag-and-drop is disabled but file pickers still work.
+Install `opencv-python` to enable Scan to PDF. Ghostscript is optional but
+provides broader PDF compression support than the built-in Pillow fallback.
 
 ## Project structure
 

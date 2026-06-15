@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PDF Tool — Split · Merge · Extract · Vector DB · Rearrange · Compress · Scan  (PyQt6)"""
 
-import os, math, threading, subprocess, textwrap, sys
+import os, math, threading, subprocess, textwrap, sys, shutil, time
 from pypdf import PdfReader, PdfWriter
 
 try:
@@ -344,33 +344,178 @@ def do_rearrange(src, outdir, order):
     with open(p, "wb") as f: w.write(f)
     return p
 
-def do_compress(src, out, level, cb):
-    """Compress PDF. Uses Ghostscript if available, else pypdf stream compression."""
-    cb("Compressing…")
-    gs_map = {"Screen (smallest)": "/screen", "eBook": "/ebook",
-              "Print": "/printer",  "Prepress (largest)": "/prepress"}
-    gs_setting = gs_map.get(level, "/ebook")
+class CompressionCancelled(Exception):
+    pass
 
-    # Try Ghostscript
-    for gs_cmd in ("gs", "gswin64c", "gswin32c"):
-        try:
-            res = subprocess.run(
+
+def _remove_file(path):
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _check_compression_cancelled(cancel_event):
+    if cancel_event and cancel_event.is_set():
+        raise CompressionCancelled("Compression cancelled.")
+
+
+class _CancellableOutput:
+    def __init__(self, handle, cancel_event):
+        self._handle = handle
+        self._cancel_event = cancel_event
+
+    def write(self, data):
+        _check_compression_cancelled(self._cancel_event)
+        return self._handle.write(data)
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+
+def _prepare_compressed_image(image, max_edge):
+    """Return a JPEG-friendly, optionally downsampled Pillow image."""
+    image = image.copy()
+    image.load()
+    if max(image.size) > max_edge:
+        image.thumbnail((max_edge, max_edge), PilImage.Resampling.LANCZOS)
+
+    if image.mode in ("RGBA", "LA") or "transparency" in image.info:
+        rgba = image.convert("RGBA")
+        background = PilImage.new("RGB", rgba.size, "white")
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        return background
+    if image.mode not in ("RGB", "L"):
+        return image.convert("RGB")
+    return image
+
+
+def _compress_images_with_pypdf(src, partial, level, cb, cancel_event):
+    if not _PIL:
+        raise RuntimeError(
+            "Pillow is required when Ghostscript is unavailable. "
+            "Install it with: pip install Pillow"
+        )
+
+    settings = {
+        "Screen (smallest)": (900, 45),
+        "eBook": (1800, 65),
+        "Print": (3500, 82),
+        "Prepress (largest)": (4800, 92),
+    }
+    max_edge, quality = settings.get(level, settings["eBook"])
+
+    writer = PdfWriter()
+    writer.append(PdfReader(src))
+    total = len(writer.pages)
+    replaced = 0
+    seen_refs = set()
+
+    for page_index, page in enumerate(writer.pages):
+        _check_compression_cancelled(cancel_event)
+        for image_file in list(page.images):
+            _check_compression_cancelled(cancel_event)
+            ref = image_file.indirect_reference
+            if ref is None:
+                continue
+            ref_key = (ref.idnum, ref.generation)
+            if ref_key in seen_refs:
+                continue
+            seen_refs.add(ref_key)
+
+            try:
+                image = image_file.image
+                if image.width * image.height < 160_000:
+                    continue
+                compressed = _prepare_compressed_image(image, max_edge)
+                image_file.replace(compressed, quality=quality, optimize=True)
+                replaced += 1
+            except (OSError, TypeError, ValueError):
+                # Unsupported and inline image encodings remain unchanged.
+                continue
+
+        page.compress_content_streams()
+        cb(page_index + 1, total, f"Recompressing page {page_index + 1}/{total}")
+
+    _check_compression_cancelled(cancel_event)
+    writer.compress_identical_objects()
+    with open(partial, "wb") as handle:
+        writer.write(_CancellableOutput(handle, cancel_event))
+    _check_compression_cancelled(cancel_event)
+    return replaced
+
+
+def do_compress(src, out, level, cb, cancel_event=None, process_control=None):
+    """Compress to a partial file, then atomically publish only on success."""
+    if os.path.realpath(src) == os.path.realpath(out):
+        raise ValueError("Choose an output file different from the source PDF.")
+
+    partial = out + ".part"
+    _remove_file(partial)
+    control = process_control if process_control is not None else {}
+    original_size = os.path.getsize(src)
+
+    try:
+        _check_compression_cancelled(cancel_event)
+        gs_cmd = next(
+            (cmd for cmd in ("gs", "gswin64c", "gswin32c") if shutil.which(cmd)),
+            None,
+        )
+        if gs_cmd:
+            cb(0, 0, "Compressing with Ghostscript…")
+            gs_map = {
+                "Screen (smallest)": "/screen",
+                "eBook": "/ebook",
+                "Print": "/printer",
+                "Prepress (largest)": "/prepress",
+            }
+            process = subprocess.Popen(
                 [gs_cmd, "-dBATCH", "-dNOPAUSE", "-dQUIET",
                  "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.4",
-                 f"-dPDFSETTINGS={gs_setting}", f"-sOutputFile={out}", src],
-                capture_output=True, timeout=120)
-            if res.returncode == 0:
-                return out, "Ghostscript"
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+                f"-dPDFSETTINGS={gs_map.get(level, '/ebook')}",
+                 f"-sOutputFile={partial}", src],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            control["process"] = process
+            started = time.monotonic()
+            while process.poll() is None:
+                if cancel_event and cancel_event.wait(0.1):
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    raise CompressionCancelled("Compression cancelled.")
+                if time.monotonic() - started > 300:
+                    process.kill()
+                    raise RuntimeError("Ghostscript compression timed out.")
+            control["process"] = None
 
-    # Fall back: pypdf stream compression
-    r = PdfReader(src); w = PdfWriter()
-    w.append(r)
-    for page in w.pages:
-        page.compress_content_streams()
-    with open(out, "wb") as f: w.write(f)
-    return out, "pypdf"
+            if (process.returncode == 0 and os.path.exists(partial)
+                    and os.path.getsize(partial) < original_size):
+                _check_compression_cancelled(cancel_event)
+                os.replace(partial, out)
+                return out, "Ghostscript"
+            _remove_file(partial)
+
+        cb(0, 0, "Recompressing embedded images…")
+        replaced = _compress_images_with_pypdf(
+            src, partial, level, cb, cancel_event
+        )
+        if os.path.getsize(partial) >= original_size:
+            raise RuntimeError(
+                "This PDF could not be made smaller with the selected level. "
+                "Try a stronger level or install Ghostscript."
+            )
+
+        _check_compression_cancelled(cancel_event)
+        os.replace(partial, out)
+        return out, f"Pillow image recompression ({replaced} images)"
+    finally:
+        control["process"] = None
+        _remove_file(partial)
 
 def do_scan_pages_to_pdf(pages, out_path, output_size, grayscale, cb):
     """
@@ -872,12 +1017,6 @@ class App(QMainWindow):
 
         if self.contentsMargins().top() != inset:
             self.setContentsMargins(0, inset, 0, 0)
-
-    def _run_bg(self, fn, on_ok, on_err):
-        def _t():
-            try:    QTimer.singleShot(0, lambda r=fn(): on_ok(r))
-            except Exception as e: QTimer.singleShot(0, lambda e=e: on_err(e))
-        threading.Thread(target=_t, daemon=True).start()
 
     # ──────────────────────────────────────────────────────────────────────────
     # SPLIT TAB
@@ -1748,6 +1887,8 @@ class App(QMainWindow):
 
     def _compress_tab(self):
         self._co_path = ""
+        self._co_cancel_event = None
+        self._co_control = None
         page = QWidget(); lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 20, 24, 16); lay.setSpacing(0)
 
@@ -1781,9 +1922,11 @@ class App(QMainWindow):
             desc_lbl.setStyleSheet(f"color:{FG2}; font-size:9pt;")
             rl.addWidget(rb); rl.addWidget(desc_lbl); rl.addStretch()
             lay.addWidget(row)
+            if i < len(levels) - 1:
+                lay.addSpacing(5)
 
-        note = QLabel("ℹ  Best results with Ghostscript installed (brew install ghostscript). "
-                      "Without it, basic pypdf stream compression is used.")
+        note = QLabel("ℹ  Ghostscript gives the broadest compression support. "
+                      "Without it, embedded images are downsampled and recompressed with Pillow.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{FG2}; font-size:9pt; padding-top:8px;")
         lay.addWidget(note)
@@ -1800,7 +1943,11 @@ class App(QMainWindow):
         lay.addWidget(_vspace(8)); lay.addWidget(_divider()); lay.addWidget(_vspace(12))
         lay.addStretch()
         self._co_btn = _primary("Compress PDF"); self._co_btn.clicked.connect(self._co_run)
-        lay.addWidget(self._co_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._co_cancel_btn = _secondary("Cancel")
+        self._co_cancel_btn.clicked.connect(self._co_cancel)
+        self._co_cancel_btn.hide()
+        actions = _hbox(None, self._co_btn, self._co_cancel_btn, None, spacing=10)
+        lay.addWidget(actions)
         lay.addWidget(_vspace(4))
         self._co_prog = ProgBar(); lay.addWidget(self._co_prog)
         return page
@@ -1839,9 +1986,29 @@ class App(QMainWindow):
 
         orig_size = os.path.getsize(self._co_path)
         self._co_btn.setDisabled(True); self._co_btn.setText("Compressing…")
+        self._co_cancel_btn.setDisabled(False)
+        self._co_cancel_btn.setText("Cancel")
+        self._co_cancel_btn.show()
         self._co_prog.working("Compressing…")
 
         src = self._co_path
+        self._co_cancel_event = threading.Event()
+        self._co_control = {}
+
+        def _restore_controls():
+            self._co_btn.setDisabled(False)
+            self._co_btn.setText("Compress PDF")
+            self._co_cancel_btn.hide()
+            self._co_cancel_btn.setDisabled(False)
+            self._co_cancel_btn.setText("Cancel")
+            self._co_cancel_event = None
+            self._co_control = None
+
+        def _progress(done, total, detail):
+            if total:
+                self._post(self._co_prog.step, done, total, detail)
+            else:
+                self._post(self._co_prog.working, detail)
 
         def _ok(res):
             out_path, method = res
@@ -1851,16 +2018,34 @@ class App(QMainWindow):
             self._co_prog.done(
                 f"{orig_fmt}  →  {new_fmt}   ({ratio:.1f}% smaller)   via {method}",
                 out_path)
-            self._co_btn.setDisabled(False); self._co_btn.setText("Compress PDF")
+            _restore_controls()
             self._sb.showMessage(f"Compressed → {os.path.basename(out_path)}")
         def _err(e):
+            _restore_controls()
+            if isinstance(e, CompressionCancelled):
+                self._co_prog.error("Compression cancelled. Partial output removed.")
+                self._sb.showMessage("Compression cancelled")
+                return
             self._co_prog.error(str(e))
-            self._co_btn.setDisabled(False); self._co_btn.setText("Compress PDF")
             QMessageBox.critical(self, "Compression failed", str(e))
 
         self._run_bg(
-            lambda: do_compress(src, out, level, lambda t: None),
+            lambda: do_compress(
+                src, out, level, _progress,
+                self._co_cancel_event, self._co_control,
+            ),
             _ok, _err)
+
+    def _co_cancel(self):
+        if not self._co_cancel_event:
+            return
+        self._co_cancel_event.set()
+        process = (self._co_control or {}).get("process")
+        if process and process.poll() is None:
+            process.terminate()
+        self._co_cancel_btn.setDisabled(True)
+        self._co_cancel_btn.setText("Cancelling…")
+        self._co_prog.working("Cancelling and removing partial output…")
 
     # ──────────────────────────────────────────────────────────────────────────
     # SCAN TO PDF TAB  (Microsoft Lens-style)
