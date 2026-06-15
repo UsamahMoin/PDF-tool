@@ -1152,7 +1152,7 @@ class App(QMainWindow):
         val = self._sp_val.get(); spec = self._sp_spec.text()
 
         def _cb(done, total, name):
-            QTimer.singleShot(0, lambda: self._sp_prog.step(done, total, name))
+            self._post(self._sp_prog.step, done, total, name)
         def _ok(out):
             self._sp_prog.done(f"{len(out)} file(s) created", outdir)
             self._sp_btn.setDisabled(False); self._sp_btn.setText("Split PDF")
@@ -1247,7 +1247,7 @@ class App(QMainWindow):
             for p in paths:
                 try: items.append((p, os.path.basename(p), *pdf_info(p)))
                 except Exception: pass
-            QTimer.singleShot(0, lambda: self._mg_insert(items))
+            self._post(self._mg_insert, items)
         threading.Thread(target=_load, daemon=True).start()
 
     def _mg_insert(self, items):
@@ -1311,7 +1311,7 @@ class App(QMainWindow):
         paths = list(self._mg_paths)
 
         def _cb(done, total, name):
-            QTimer.singleShot(0, lambda: self._mg_prog.step(done, total, name))
+            self._post(self._mg_prog.step, done, total, name)
         def _ok(pg):
             self._mg_prog.done(f"Merged {len(paths)} PDFs  ({pg} pages total)", out)
             self._mg_btn.setDisabled(False); self._mg_btn.setText("Merge PDFs")
@@ -1448,12 +1448,16 @@ class App(QMainWindow):
             found = False
             for pnum, text in do_extract(path, frm, to):
                 s = text.strip(); found = found or bool(s)
-                QTimer.singleShot(0, lambda s=s, n=pnum: self._txt_add(
-                    f"Page {n}\n{'─'*44}\n{s}\n\n"))
+                self._post(
+                    self._txt_add,
+                    f"Page {pnum}\n{'─'*44}\n{s}\n\n",
+                )
             if not found:
-                QTimer.singleShot(0, lambda: self._txt_add(
-                    "(No selectable text — PDF may be scanned/image-based)"))
-            QTimer.singleShot(0, self._ex_done)
+                self._post(
+                    self._txt_add,
+                    "(No selectable text — PDF may be scanned/image-based)",
+                )
+            self._post(self._ex_done)
         threading.Thread(target=_stream, daemon=True).start()
 
     def _txt_add(self, chunk):
@@ -1644,7 +1648,7 @@ class App(QMainWindow):
             for p in paths:
                 try: items.append((p, os.path.basename(p), *pdf_info(p)))
                 except Exception: pass
-            QTimer.singleShot(0, lambda: self._vdb_insert(items))
+            self._post(self._vdb_insert, items)
         threading.Thread(target=_load, daemon=True).start()
 
     def _vdb_insert(self, items):
@@ -1686,8 +1690,12 @@ class App(QMainWindow):
 
         def _cb(fi, ft, fname, pi, pt):
             detail = f"File {fi+1}/{ft}  —  {fname}  page {pi}/{pt}"
-            QTimer.singleShot(0, lambda d=detail, fi=fi, ft=ft, pi=pi, pt=pt:
-                self._vdb_prog.step(fi*pt+pi, max(ft*pt, 1), d))
+            self._post(
+                self._vdb_prog.step,
+                fi * pt + pi,
+                max(ft * pt, 1),
+                detail,
+            )
 
         def _ok(res):
             n_chunks, coll_name = res
